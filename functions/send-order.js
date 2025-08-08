@@ -12,3 +12,4 @@ exports.handler = async (event) => {
   });
   return { statusCode: r.ok ? 200 : 500, body: r.ok ? 'ok' : 'fail' };
 };
+
