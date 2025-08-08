@@ -1,3 +1,4 @@
+// functions/supabase.js
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE } = process.env;
 
 const base = `${SUPABASE_URL}/rest/v1/kv`;
@@ -21,7 +22,6 @@ async function setKV(key, value) {
     body: JSON.stringify([{ key, value }])
   });
   if (r.status === 409) {
-    // update
     const url = `${base}?key=eq.${encodeURIComponent(key)}`;
     await fetch(url, { method: 'PATCH', headers, body: JSON.stringify({ value }) });
   }
