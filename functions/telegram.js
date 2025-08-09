@@ -3,29 +3,81 @@ const { getKV, setKV } = require('./supabase');
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
-// Admins : mets ADMIN_IDS (plusieurs IDs séparés par des virgules) ou à défaut ADMIN_CHAT_ID
+// Admins : ADMIN_IDS (1+ IDs séparés par virgule) ou fallback ADMIN_CHAT_ID
 const ADMIN_IDS = (process.env.ADMIN_IDS || process.env.ADMIN_CHAT_ID || '')
-  .split(',')
-  .map(x => x.trim())
-  .filter(Boolean);
+  .split(',').map(x => x.trim()).filter(Boolean);
 const isAdmin = id => ADMIN_IDS.includes(String(id));
 
-async function sendMsg(token, chatId, text) {
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+// --- Utils Telegram ---
+async function tgFetch(method, body, TOKEN) {
+  const r = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
+    body: JSON.stringify(body)
   });
+  const text = await r.text().catch(()=> '');
+  let json = null;
+  try { json = JSON.parse(text); } catch {}
+  return { ok: r.ok, status: r.status, text, json };
+}
+
+async function sendMsg(TOKEN, chatId, text, extra = {}) {
+  return tgFetch('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown', ...extra }, TOKEN);
+}
+async function answerCb(TOKEN, cbId, text = '') {
+  return tgFetch('answerCallbackQuery', { callback_query_id: cbId, text, show_alert: false }, TOKEN);
+}
+
+// --- Menu principal (reply keyboard) ---
+function mainKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["➕ Ajouter", "📝 Modifier", "🗑️ Supprimer"],
+        ["🔑 Code d'accès", "🏠 Message bienvenue", "ℹ️ Info & consignes"]
+      ],
+      resize_keyboard: true,
+      one_time_keyboard: false
+    }
+  };
+}
+async function showMainMenu(TOKEN, chatId) {
+  await sendMsg(TOKEN, chatId, "Que veux-tu faire ?", mainKeyboard());
+}
+
+// --- Wizard produit (mêmes étapes que ta version) ---
+const productSteps = [
+  { key: 'name',   ask: (v)=>`Envoie le *NOM* du produit${v?` (ou /skip pour garder "${v}")`:""}` },
+  { key: 'cat',    ask: (v)=>`Catégorie ?${v?` (ou /skip pour garder "${v}")`:""}` },
+  { key: 'desc',   ask: (v)=>`Description ?${v?` (ou /skip pour garder "${v}")`:""}` },
+  { key: 'thclvl', ask: (v)=>`Taux THC (%) ?${v?` (ou /skip pour garder "${v}")`:""}` },
+  { key: 'prices', ask: (v)=>`Prix (format : 1g:10,2g:18)\n${Array.isArray(v)&&v.length?`Valeur actuelle : ${v.map(x=>x.qte+":"+x.price).join(', ')}`:""}\nEnvoie ou /skip pour garder.` },
+  { key: 'img',    ask: (v)=>`URL image ? (ou /skip pour garder "${v||'(aucune)'}")` },
+  { key: 'video',  ask: (v)=>`URL vidéo ? (ou /skip pour garder "${v||'(aucune)'}")` },
+];
+
+// --- Inline pour lister les produits ---
+function inlineEditRow(idx) {
+  return { inline_keyboard: [[ { text: "✏️ Modifier", callback_data: `edit_${idx}` } ]] };
+}
+function inlineDeleteRow(idx) {
+  return { inline_keyboard: [[ { text: "🗑️ Supprimer", callback_data: `delete_${idx}` } ]] };
+}
+function inlineConfirmDelete(idx) {
+  return {
+    inline_keyboard: [[
+      { text: "❌ Annuler",  callback_data: "cancel_del" },
+      { text: "✅ Confirmer", callback_data: `confirmdel_${idx}` }
+    ]]
+  };
 }
 
 exports.handler = async (event) => {
   try {
     const m = event.httpMethod;
-
-    // évite les 405 parasites
-    if (m === 'HEAD') return { statusCode: 200, headers: JSON_HEADERS };
-    if (m === 'OPTIONS') return { statusCode: 204, headers: JSON_HEADERS, body: '' };
-    if (m !== 'POST') return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
+    if (m === 'HEAD')   return { statusCode: 200, headers: JSON_HEADERS };
+    if (m === 'OPTIONS')return { statusCode: 204, headers: JSON_HEADERS, body: '' };
+    if (m !== 'POST')   return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
 
     const TOKEN = process.env.BOT_TOKEN;
     if (!TOKEN) return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Missing BOT_TOKEN' }) };
@@ -34,19 +86,78 @@ exports.handler = async (event) => {
     try { update = JSON.parse(event.body || '{}'); }
     catch { return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Bad JSON' }) }; }
 
-    const msg = update?.message;
+    // --- CALLBACK QUERY (inline boutons) ---
+    if (update.callback_query) {
+      const cb = update.callback_query;
+      const chatId = cb.message?.chat?.id;
+      const data = cb.data || '';
+      await answerCb(TOKEN, cb.id);
+
+      if (!isAdmin(chatId)) {
+        await sendMsg(TOKEN, chatId, '⛔ Accès admin requis.');
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+
+      // Données
+      let menu = (await getKV('menu')) || [];
+
+      if (data.startsWith('delete_')) {
+        const idx = parseInt(data.split('_')[1], 10);
+        if (!menu[idx]) { await sendMsg(TOKEN, chatId, 'Produit introuvable.'); }
+        else {
+          await sendMsg(TOKEN, chatId, `⚠️ Supprimer "*${menu[idx].name}*"?`, { reply_markup: inlineConfirmDelete(idx) });
+        }
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+
+      if (data === 'cancel_del') {
+        await sendMsg(TOKEN, chatId, 'Suppression annulée.');
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+
+      if (data.startsWith('confirmdel_')) {
+        const idx = parseInt(data.split('_')[1], 10);
+        if (!menu[idx]) { await sendMsg(TOKEN, chatId, 'Produit introuvable.'); }
+        else {
+          const name = menu[idx].name || '(sans nom)';
+          menu.splice(idx, 1);
+          await setKV('menu', menu);
+          await sendMsg(TOKEN, chatId, `✅ Produit "*${name}*" supprimé !`);
+        }
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+
+      if (data.startsWith('edit_')) {
+        const idx = parseInt(data.split('_')[1], 10);
+        if (!menu[idx]) { await sendMsg(TOKEN, chatId, 'Produit introuvable.'); }
+        else {
+          // démarrer wizard édition
+          const stateKey = `state:${chatId}`;
+          await setKV(stateKey, { mode: 'add', submode: 'edit', idx, step: 0, prod: { ...menu[idx] } });
+          const first = productSteps[0];
+          await sendMsg(TOKEN, chatId, `Modification "*${menu[idx].name}*"\n${first.ask(menu[idx].name)}`);
+        }
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+
+      // Fallback
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    // --- MESSAGE (reply keyboard / commandes) ---
+    const msg = update.message;
     const chatId = msg?.chat?.id;
     const txt = (msg?.text || '').trim();
 
     if (!chatId) return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
 
-    // commande publique utile
+    // publique
     if (txt === '/whoami') {
-      await sendMsg(TOKEN, chatId, `Votre chat_id: \`${chatId}\``);
+      await sendMsg(TOKEN, chatId, `Votre chat_id: \`${chatId}\``, mainKeyboard());
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // dès ici : admin uniquement
+    // admin uniquement
     if (!isAdmin(chatId)) {
       await sendMsg(TOKEN, chatId, '⛔ Accès admin requis.');
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
@@ -58,190 +169,159 @@ exports.handler = async (event) => {
     let menu = (await getKV('menu')) || [];
     let conf = (await getKV('site_config')) || { access_code: '1234', welcome: '', info: '' };
 
-    // --- aide ---
+    // /start ou /help => menu
     if (txt === '/start' || txt === '/help') {
-      await sendMsg(TOKEN, chatId, [
-        '*Admin*',
-        '• /menu — voir le menu',
-        '• /add — ajouter un produit (assistant)',
-        '• /del N — supprimer l’item N (1,2,3...)',
-        '• /edit N champ valeur — éditer un item',
-        '   champs: name, cat, desc, thclvl, prices, img, video',
-        '   ex: /edit 2 prices 1g:10,2g:18',
-        '• /config — modifier welcome/info/access_code (mode guidé)',
-        '• /cancel — annuler',
-        '• /done — enregistrer',
-        '• /whoami — afficher votre chat_id'
-      ].join('\n'));
+      await showMainMenu(TOKEN, chatId);
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // --- liste ---
-    if (txt === '/menu') {
-      const list = menu.length
-        ? menu.map((p, i) => `${i + 1}. *${p.name || '(sans nom)'}* ${p.cat ? `— ${p.cat}` : ''}`).join('\n')
-        : '(vide)';
-      await sendMsg(TOKEN, chatId, `Menu:\n${list}`);
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // --- suppression ---
-    if (txt.startsWith('/del ')) {
-      const n = parseInt(txt.split(/\s+/)[1], 10);
-      if (!Number.isInteger(n) || n < 1 || n > menu.length) {
-        await sendMsg(TOKEN, chatId, 'Format: `/del N` avec N entre 1 et la longueur du menu.');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      const removed = menu.splice(n - 1, 1)[0];
-      await setKV('menu', menu);
-      await sendMsg(TOKEN, chatId, `🗑️ Supprimé: *${removed?.name || '(sans nom)'}* (#${n})`);
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // --- édition ---
-    if (txt.startsWith('/edit ')) {
-      const parts = txt.split(' ');
-      if (parts.length < 4) {
-        await sendMsg(TOKEN, chatId, 'Format: `/edit N champ valeur...`\nchamps: name, cat, desc, thclvl, prices, img, video');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      const n = parseInt(parts[1], 10);
-      const field = parts[2];
-      const value = txt.split(' ').slice(3).join(' ');
-      if (!Number.isInteger(n) || n < 1 || n > menu.length) {
-        await sendMsg(TOKEN, chatId, 'Index N invalide.');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      const allowed = ['name','cat','desc','thclvl','prices','img','video'];
-      if (!allowed.includes(field)) {
-        await sendMsg(TOKEN, chatId, `Champ invalide. Utilise: ${allowed.join(', ')}`);
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-
-      const item = menu[n - 1];
-      if (field === 'thclvl') {
-        const num = Number(value);
-        if (isNaN(num)) { await sendMsg(TOKEN, chatId, 'thclvl doit être un nombre (ex: 18)'); }
-        else item.thclvl = num;
-      } else if (field === 'prices') {
-        // 1g:10,2g:18
-        const arr = value
-          ? value.split(',').map(x => {
-              const [qte, price] = x.split(':');
-              return { qte: qte?.trim(), price: Number(price) };
-            }).filter(x => x.qte && !isNaN(x.price))
-          : [];
-        item.prices = arr;
-      } else {
-        item[field] = value;
-      }
-      menu[n - 1] = item;
-      await setKV('menu', menu);
-      await sendMsg(TOKEN, chatId, `✏️ Édité #${n} \`${field}\`.`);
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // --- config guidée ---
-    if (txt === '/config') {
-      state = { mode: 'config', step: 0, prod: null };
+    // === BOUTONS MENU PRINCIPAL ===
+    if (txt === '➕ Ajouter') {
+      state = { mode: 'add', submode: 'create', step: 0, prod: { prices: [] } };
       await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, 'Mode config.\nEnvoie `welcome ...` ou `info ...` ou `access_code ...`');
+      const s = productSteps[0]; await sendMsg(TOKEN, chatId, s.ask(''), mainKeyboard());
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
-    if (state.mode === 'config' && txt) {
-      const space = txt.indexOf(' ');
-      if (space > 0) {
-        const key = txt.slice(0, space);
-        const val = txt.slice(space + 1);
-        if (['welcome','info','access_code'].includes(key)) {
-          conf[key] = val;
-          await setKV('site_config', conf);
-          await sendMsg(TOKEN, chatId, `✅ Mis à jour *${key}*.`);
+
+    if (txt === '📝 Modifier') {
+      if (!menu.length) { await sendMsg(TOKEN, chatId, 'Aucun produit à modifier.', mainKeyboard()); }
+      else {
+        for (let i=0;i<menu.length;i++) {
+          const p = menu[i];
+          await sendMsg(TOKEN, chatId, `#${i+1} - ${p.name || '(sans nom)'} ${p.cat?`(${p.cat})`:''}`, { reply_markup: inlineEditRow(i) });
+        }
+      }
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    if (txt === '🗑️ Supprimer') {
+      if (!menu.length) { await sendMsg(TOKEN, chatId, 'Aucun produit à supprimer.', mainKeyboard()); }
+      else {
+        for (let i=0;i<menu.length;i++) {
+          const p = menu[i];
+          await sendMsg(TOKEN, chatId, `#${i+1} - ${p.name || '(sans nom)'} ${p.cat?`(${p.cat})`:''}`, { reply_markup: inlineDeleteRow(i) });
+        }
+      }
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    if (txt === '🔑 Code d\'accès') {
+      state = { mode: 'config_set', key: 'access_code' };
+      await setKV(stateKey, state);
+      await sendMsg(TOKEN, chatId, `Code actuel : ${conf.access_code}\nEnvoie le *nouveau code* (2–16 caractères).`, mainKeyboard());
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    if (txt === '🏠 Message bienvenue') {
+      state = { mode: 'config_set', key: 'welcome' };
+      await setKV(stateKey, state);
+      await sendMsg(TOKEN, chatId, `Message actuel :\n${conf.welcome || '(vide)'}\n\nEnvoie le *nouveau message de bienvenue*.`, mainKeyboard());
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    if (txt === 'ℹ️ Info & consignes') {
+      state = { mode: 'config_set', key: 'info' };
+      await setKV(stateKey, state);
+      await sendMsg(TOKEN, chatId, `Texte actuel :\n${conf.info || '(vide)'}\n\nEnvoie les *nouvelles infos & consignes*.`, mainKeyboard());
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    // === ANNULER ===
+    if (txt === '/cancel' || txt === '/annuler') {
+      state = { mode: null, step: 0, prod: null };
+      await setKV(stateKey, state);
+      await sendMsg(TOKEN, chatId, 'Annulé.', mainKeyboard());
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    // === MODE CONFIG_SET (depuis boutons) ===
+    if (state.mode === 'config_set' && state.key) {
+      const key = state.key;
+      if (key === 'access_code') {
+        if (!/^\w{2,16}$/.test(txt)) {
+          await sendMsg(TOKEN, chatId, 'Le code doit faire 2–16 caractères alphanumériques. Réessaie ou /annuler.');
           return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
         }
       }
-      await sendMsg(TOKEN, chatId, 'Format: `welcome Votre message`');
+      conf[key] = txt;
+      await setKV('site_config', conf);
+      await setKV(stateKey, { mode: null, step: 0, prod: null });
+      await sendMsg(TOKEN, chatId, `✅ ${key} mis à jour !`, mainKeyboard());
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // --- assistant d'ajout ---
-    if (txt === '/add') {
-      state = { mode: 'add', step: 0, prod: {} };
-      await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, 'Ajout produit. Nom ? (ou /cancel)');
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
+    // === WIZARD PRODUIT (add/edit) ===
     if (state.mode === 'add') {
-      const steps = [
-        { key: 'name',   ask: 'Nom ?' },
-        { key: 'cat',    ask: 'Catégorie ?' },
-        { key: 'desc',   ask: 'Description ?' },
-        { key: 'thclvl', ask: 'Taux THC (%) ?' },
-        { key: 'prices', ask: 'Prix (ex: 1g:10,2g:18)' },
-        { key: 'img',    ask: 'URL image (ou vide)' },
-        { key: 'video',  ask: 'URL vidéo (ou vide)' },
-      ];
+      const step = state.step || 0;
       const prod = state.prod || {};
-      const prev = steps[state.step - 1];
+      const current = productSteps[step];
 
-      if (prev) {
-        if (prev.key === 'prices') {
+      if (!current) {
+        // fin
+        if (state.submode === 'create') menu.push(prod);
+        if (state.submode === 'edit')   menu[state.idx] = prod;
+        await setKV('menu', menu);
+        await setKV(stateKey, { mode: null, step: 0, prod: null });
+        await sendMsg(TOKEN, chatId, state.submode === 'create' ? '✅ Produit ajouté !' : `✅ Produit "${prod.name}" modifié !`, mainKeyboard());
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+
+      // Traite la réponse
+      if (txt !== '/skip') {
+        if (current.key === 'prices') {
           prod.prices = txt
-            ? txt.split(',').map(x => {
-                const [qte, price] = x.split(':');
-                return { qte: qte?.trim(), price: Number(price) };
+            ? txt.split(',').map(s => {
+                const [qte, price] = s.split(':');
+                return { qte: (qte||'').trim(), price: Number((price||'').trim()) };
               }).filter(x => x.qte && !isNaN(x.price))
             : [];
-        } else if (prev.key === 'thclvl') {
+        } else if (current.key === 'thclvl') {
           const num = Number(txt);
           if (!isNaN(num)) prod.thclvl = num;
         } else {
-          prod[prev.key] = txt;
+          prod[current.key] = txt;
         }
       }
+      // étape suivante
+      const nextStep = step + 1;
+      const next = productSteps[nextStep];
+      await setKV(stateKey, { ...state, step: nextStep, prod });
 
-      const next = steps[state.step];
       if (next) {
-        state = { mode: 'add', step: state.step + 1, prod };
-        await setKV(stateKey, state);
-        await sendMsg(TOKEN, chatId, next.ask + '\n(/cancel pour annuler, /done pour finir)');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+        const val = prod[next.key];
+        const question = typeof next.ask === 'function' ? next.ask(val) : next.ask;
+        await sendMsg(TOKEN, chatId, question);
       } else {
-        await sendMsg(TOKEN, chatId, 'Tape /done pour enregistrer, ou /cancel pour annuler.');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+        // la fin sera gérée au prochain tour (current === undefined)
+        await sendMsg(TOKEN, chatId, 'Tape /done pour enregistrer, ou /annuler pour annuler.');
       }
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
     if (txt === '/done') {
       if (state.mode !== 'add' || !state.prod) {
-        await sendMsg(TOKEN, chatId, 'Rien à enregistrer. Tape /add pour commencer.');
+        await sendMsg(TOKEN, chatId, 'Rien à enregistrer. Tape "➕ Ajouter" pour commencer.', mainKeyboard());
         return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
       }
       const prod = state.prod;
       if (!prod.name) {
-        await sendMsg(TOKEN, chatId, 'Nom manquant.');
+        await sendMsg(TOKEN, chatId, 'Nom manquant. /annuler pour quitter.');
         return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
       }
-      menu.push(prod);
+      if (state.submode === 'create') menu.push(prod);
+      if (state.submode === 'edit')   menu[state.idx] = prod;
       await setKV('menu', menu);
-      state = { mode: null, step: 0, prod: null };
-      await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, `✅ Produit *${prod.name}* ajouté !`);
+      await setKV(stateKey, { mode: null, step: 0, prod: null });
+      await sendMsg(TOKEN, chatId, state.submode === 'create' ? '✅ Produit ajouté !' : `✅ Produit "${prod.name}" modifié !`, mainKeyboard());
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    if (txt === '/cancel') {
-      state = { mode: null, step: 0, prod: null };
-      await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, 'Annulé.');
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // par défaut
-    await sendMsg(TOKEN, chatId, 'Commande inconnue. Utilise /help.');
+    // Par défaut → réaffiche le menu
+    await showMainMenu(TOKEN, chatId);
     return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+
   } catch (err) {
     return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Internal error', details: String(err?.message || err) }) };
   }
 };
+
