@@ -1,0 +1,11 @@
+{
+  "name": "netlify-miniapp",
+  "private": true,
+  "version": "1.0.0",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.44.4"
+  }
+}
