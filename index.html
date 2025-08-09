@@ -11,6 +11,7 @@
     --bg:#161c25; --header-bg:linear-gradient(90deg,#22283a 50%,#472f85 100%);
     --card-bg:#232a3c; --primary:#FFD600; --accent:#7c5ee6; --text:#fafafa;
     --muted:#9aa2bc; --green:#4eea89; --danger:#e25454;
+    --chip:#1e2536; --chipText:#e6e8ef;
   }
 
   /* Base */
@@ -33,9 +34,10 @@
   .tg-miniapp{background:#111b2580;color:var(--primary);font-size:.89rem;font-weight:700;border-radius:8px;padding:2px 11px 3px;font-family:'Montserrat',Arial,sans-serif;}
 
   /* Menu top */
-  .menu-top{max-width:480px;margin:17px auto 12px;padding:0 6vw;display:flex;justify-content:flex-end;gap:9px;}
-  .menu-btn{background:#22283a;color:var(--primary);border:none;border-radius:13px;padding:8px 16px;font-size:1rem;font-family:'Montserrat',Arial,sans-serif;font-weight:700;cursor:pointer;transition:background .18s;}
+  .menu-top{max-width:480px;margin:17px auto 12px;padding:0 6vw;display:flex;justify-content:flex-end;gap:9px;flex-wrap:wrap;}
+  .menu-btn{background:#22283a;color:var(--primary);border:none;border-radius:13px;padding:8px 14px;font-size:1rem;font-family:'Montserrat',Arial,sans-serif;font-weight:700;cursor:pointer;transition:background .18s;}
   .menu-btn:active{background:var(--accent);color:var(--text);}
+  .loyalty-chip{background:#1c2232;color:#ffd36a;border:1px dashed #ffd36a55;border-radius:999px;padding:6px 10px;font-weight:700;font-size:.9rem;display:none}
 
   /* Welcome */
   .welcome{margin:12px auto 13px;padding:0 4vw;max-width:390px;font-size:1.02rem;color:var(--muted);text-align:center;}
@@ -57,15 +59,22 @@
   .product-card:active{box-shadow:0 2px 9px #0004;outline:1.5px solid var(--accent);}
   .card-img{width:100%;height:135px;object-fit:cover;border-radius:18px 18px 0 0;background:#181f2d;}
   .product-type{position:absolute;top:11px;left:11px;background:#222d43ee;color:var(--muted);font-size:.89rem;border-radius:8px;padding:2px 11px;font-weight:700;z-index:2;}
-  .product-name{margin:10px 0 0;font-family:'Montserrat',Arial,sans-serif;font-weight:900;color:var(--primary);font-size:1.09rem;letter-spacing:.01em;}
-  .product-price{color:var(--muted);font-size:1.01rem;margin-bottom:5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .product-name{margin:10px 0 6px;font-family:'Montserrat',Arial,sans-serif;font-weight:900;color:var(--primary);font-size:1.09rem;letter-spacing:.01em;}
+
+  /* Ligne de prix (pills) */
+  .price-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0 4px;}
+  .price-pill{background:var(--chip);color:var(--chipText);border-radius:999px;padding:6px 10px;display:inline-flex;gap:8px;align-items:baseline;box-shadow:inset 0 0 0 1px #2e3a56;max-width:100%}
+  .price-pill b{font-weight:800;color:#ffe36c;font-size:.95rem}
+  .price-pill em{font-style:normal;font-weight:800;color:#b9c3df;letter-spacing:.2px}
+  .price-pill.more{opacity:.85;border-style:dashed}
+
   .product-promo{color:var(--green);font-size:1.02rem;font-weight:bold;margin:3px 0 2px;}
 
   /* Boutons */
-  .order-btn{background:linear-gradient(90deg,#8a63fa,#7043d4 90%);color:#ffd700;border:none;font-size:1.15rem;font-weight:bold;border-radius:14px;padding:16px 0;cursor:pointer;margin:30px auto 4px;width:96%;box-shadow:0 2px 12px #0003;letter-spacing:.2px;transition:background .18s,box-shadow .18s;}
+  .order-btn{background:linear-gradient(90deg,#8a63fa,#7043d4 90%);color:#ffd700;border:none;font-size:1.15rem;font-weight:bold;border-radius:14px;padding:16px 0;cursor:pointer;margin:16px auto 4px;width:96%;box-shadow:0 2px 12px #0003;letter-spacing:.2px;transition:background .18s,box-shadow .18s;}
   .order-btn:hover{background:linear-gradient(90deg,#6a43d4,#8a63fa 90%);box-shadow:0 3px 18px #8857ee99;}
   .order-btn:active{background:var(--primary);color:#181f2d;}
-  .details-btn{margin-top:8px;background:var(--card-bg);color:var(--primary);border:2px solid var(--primary);font-weight:700;border-radius:11px;padding:8px 0;cursor:pointer;font-size:1.03rem;width:93%;align-self:center;transition:background .18s,color .17s,border .14s;}
+  .details-btn{margin-top:8px;background:var(--card-bg);color:var(--primary);border:2px solid var(--primary);font-weight:700;border-radius:11px;padding:12px 0;cursor:pointer;font-size:1.03rem;width:96%;display:block;margin-left:auto;margin-right:auto;transition:background .18s,color .17s,border .14s;}
   .details-btn:active{background:var(--primary);color:#232a3c;}
 
   /* Panier flottant */
@@ -85,29 +94,7 @@
   .modal-confirm{color:var(--green);margin-top:11px;}
   .modal-error{color:var(--danger);font-size:.96rem;margin-top:5px;}
 
-  /* Responsive */
-  @media (max-width:700px){
-    .modal-title{font-size:1.3rem;}
-    .order-btn{font-size:1.05rem;padding:14px 0;width:100%;margin:22px 0 2px;}
-  }
-  @media (max-width:500px){
-    .tg-header{padding:11px 0 7px;}
-    .tg-logo{width:26px;height:26px;margin-right:7px;}
-    .tg-title{font-size:1.03rem;}
-    .menu-top{padding:0 2vw;}
-    .products-grid{padding:0 1vw;}
-    .product-card{border-radius:13px;}
-    .card-img{border-radius:13px 13px 0 0;height:115px;}
-    .modal-content{padding:17px 2vw 10px;}
-  }
-  @media (max-width:430px){
-    .modal-title{font-size:1.02rem;}
-    .order-btn{font-size:.96rem;padding:11px 0;}
-  }
-  </style>
-
-  <!-- Bottom-Sheet Détails -->
-  <style id="product-sheet-css">
+  /* Bottom Sheet Détails */
   :root{--sheet-max-h:85vh;--sheet-radius:16px;--sheet-overlay:rgba(0,0,0,.55);--sheet-chip:#1c2230;--sheet-muted:#9aa2bc;}
   @media (prefers-color-scheme:light){:root{--sheet-chip:#eef2f6;--sheet-muted:#667085;}}
   .sheet-overlay{position:fixed;inset:0;background:var(--sheet-overlay);opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:9998;}
@@ -134,7 +121,26 @@
   .sheet-btn.primary{background:var(--accent);color:var(--primary);}
   .sheet-btn:active{transform:translateY(1px);}
   @media (min-width:860px){.sheet{place-items:center;}.sheet-panel{width:min(760px,92vw);border-radius:16px;max-height:86vh;}.sheet-handle{display:none;}}
-  body[data-sheet-lock]{overflow:hidden;touch-action:none;}
+
+  /* Responsive */
+  @media (max-width:700px){
+    .modal-title{font-size:1.3rem;}
+    .order-btn{font-size:1.05rem;padding:14px 0;width:100%;margin:22px 0 2px;}
+  }
+  @media (max-width:500px){
+    .tg-header{padding:11px 0 7px;}
+    .tg-logo{width:26px;height:26px;margin-right:7px;}
+    .tg-title{font-size:1.03rem;}
+    .menu-top{padding:0 2vw;}
+    .products-grid{padding:0 1vw;}
+    .product-card{border-radius:13px;}
+    .card-img{border-radius:13px 13px 0 0;height:115px;}
+    .modal-content{padding:17px 2vw 10px;}
+  }
+  @media (max-width:430px){
+    .modal-title{font-size:1.02rem;}
+    .order-btn{font-size:.96rem;padding:11px 0;}
+  }
   </style>
 </head>
 
@@ -163,7 +169,9 @@
 
   <!-- Top menu -->
   <div class="menu-top">
-    <button class="menu-btn" onclick="openInfo()">Info & Consignes</button>
+    <button class="menu-btn" onclick="openInfo()">ℹ️ Info & Consignes</button>
+    <button class="menu-btn" onclick="openLoyalty()">🎁 Fidélité</button>
+    <span class="loyalty-chip" id="loyaltyChip"></span>
   </div>
 
   <!-- Welcome -->
@@ -212,33 +220,34 @@
   <div class="sheet-overlay" id="psOverlay"></div>
 
   <script>
-  // ====== VARIABLES GLOBALES ======
-  let siteConfig = { access_code:'1234', welcome:'', info:'' };
+  // ====== GLOBAL ======
+  let siteConfig = { access_code:'1234', welcome:'', info:'', loyalty:{ threshold:5, reward:'🎁 Cadeau' } };
   let menu = [];
   let allowedCats = [];
   let cart = [];
+  let loyaltyUser = localStorage.getItem('loyaltyUser') || '';
 
   // ====== OUTILS ======
+  const $ = (id)=>document.getElementById(id);
   function escapeHTML(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function normalizeUrl(u){ if(!u) return ''; u=String(u).trim(); if(u.startsWith('//')) return 'https:'+u; if(u.startsWith('http://')) return u.replace('http://','https://'); return u; }
   function euros(v){ v=Number(v); return Number.isFinite(v) ? v.toLocaleString()+'€' : ''; }
-  // Construit une ligne courte des prix (face avant)
-  function formatPricesShort(prices,{maxItems=3,maxChars=48}={}){
-    if(!Array.isArray(prices)||prices.length===0) return '';
-    const parts = prices.map(p => `${escapeHTML((p.qte||'').trim())} ${euros(p.price)}`);
-    const out = [];
-    for(let i=0;i<parts.length;i++){
-      const candidate = (out.length ? out.join(' • ')+' • ' : '') + parts[i];
-      if((out.length+1)>maxItems || candidate.length>maxChars) break;
-      out.push(parts[i]);
-    }
-    const remaining = parts.length - out.length;
-    return out.join(' • ') + (remaining>0 ? `  +${remaining}` : '');
+  function normUser(u){ u=String(u||'').trim(); if(!u) return ''; if(!u.startsWith('@')) u='@'+u; return u.toLowerCase(); }
+
+  // Prix → pills (face avant)
+  function pricePills(prices, max=3){
+    if(!Array.isArray(prices) || !prices.length) return '';
+    const shown = prices.slice(0, max).map(p => `
+      <span class="price-pill"><b>${escapeHTML(p.qte||'')}</b><em>${euros(p.price)}</em></span>
+    `).join('');
+    const rest = prices.length - Math.min(max, prices.length);
+    const more = rest>0 ? `<span class="price-pill more">+${rest}</span>` : '';
+    return shown + more;
   }
 
-  // Fetch JSON robuste (évite l'erreur "Unexpected token '<'")
-  async function fetchJson(url){
-    const res = await fetch(url);
+  // Fetch JSON robuste
+  async function fetchJson(url, opts){
+    const res = await fetch(url, opts);
     if(!res.ok){
       const txt = await res.text().catch(()=> '');
       throw new Error('HTTP '+res.status+' — '+txt.slice(0,200));
@@ -259,13 +268,15 @@
         (async()=>{ try{ return await fetchJson('/.netlify/functions/config.js'); } catch{ return await fetchJson('/.netlify/functions/site-config'); } })()
       ]);
       menu = Array.isArray(menuData) ? menuData : [];
-      siteConfig = conf && typeof conf==='object' ? conf : siteConfig;
+      siteConfig = conf && typeof conf==='object' ? {...siteConfig, ...conf} : siteConfig;
 
-      document.getElementById('welcomeMessage').innerHTML = siteConfig.welcome || '';
+      $('welcomeMessage').innerHTML = siteConfig.welcome || '';
 
       updateAllowedCats();
       generateFilters();
       renderProducts();
+
+      if (loyaltyUser) { try { await refreshLoyaltyChip(loyaltyUser); } catch {} }
     }catch(err){
       console.error('loadAllConfig failed:', err);
       alert("API indisponible (menu/config). Vérifie les Functions.\n"+err.message);
@@ -274,12 +285,12 @@
 
   // ====== ACCÈS ======
   function validateAccess(){
-    const code = document.getElementById('accessCode').value.trim();
+    const code = $('accessCode').value.trim();
     if(code === siteConfig.access_code){
-      document.getElementById('accessOverlay').style.display='none';
-      document.getElementById('accessError').innerText='';
+      $('accessOverlay').style.display='none';
+      $('accessError').innerText='';
     }else{
-      document.getElementById('accessError').innerText='Code incorrect !';
+      $('accessError').innerText='Code incorrect !';
     }
   }
 
@@ -290,7 +301,12 @@
     allowedCats.forEach(cat=>{
       html += `<button class="filter-btn" onclick="filterProducts('${String(cat).replace(/'/g,"\\'")}',this)">${escapeHTML(cat)}</button>`;
     });
-    document.getElementById('filtersBar').innerHTML = html;
+    $('filtersBar').innerHTML = html;
+  }
+  function filterProducts(cat, el){
+    document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+    if(el) el.classList.add('active');
+    renderProducts(cat);
   }
 
   // ====== RENDER PRODUITS ======
@@ -308,7 +324,7 @@
             ? `<img class="card-img" src="${normalizeUrl(prod.img)}" alt="photo ${escapeHTML(prod.name||'')}" referrerpolicy="no-referrer">`
             : (prod.video ? `<video class="card-img" src="${normalizeUrl(prod.video)}" muted autoplay loop playsinline style="object-fit:cover;background:#000"></video>` : "");
 
-        const pricesShort = formatPricesShort(prod.prices,{maxItems:3,maxChars:48});
+        const pricesRow = pricePills(prod.prices, 3);
 
         productsHtml += `
           <div class="product-card" data-type="${escapeHTML(prod.cat||'')}">
@@ -316,7 +332,9 @@
             ${media}
             <div style="padding:0 17px;">
               <div class="product-name">${escapeHTML(prod.name||'')}</div>
-              <div class="product-price">${pricesShort || escapeHTML(prod.desc||'')}</div>
+              <div class="price-row">
+                ${pricesRow || `<span class="price-pill"><b>Info</b><em>voir détails</em></span>`}
+              </div>
               ${prod.promo ? `<div class="product-promo">${escapeHTML(prod.promo)}</div>` : ""}
               <button class="order-btn" onclick="chooseQuantity('${encodeURIComponent(JSON.stringify(prod))}')">Ajouter au panier</button>
               <button class="details-btn" onclick="openProductSheet('${encodeURIComponent(JSON.stringify(prod))}')">Détails</button>
@@ -325,13 +343,7 @@
         `;
       });
     }
-    document.getElementById('productsGrid').innerHTML = productsHtml;
-  }
-
-  function filterProducts(cat, el){
-    document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
-    if(el) el.classList.add('active');
-    renderProducts(cat);
+    $('productsGrid').innerHTML = productsHtml;
   }
 
   // ====== PANIER ======
@@ -359,14 +371,14 @@
     `;
     showModal(qteHtml);
   }
-  function toggleCustomQte(sel){ document.getElementById('customQteField').style.display = (sel.value==='custom') ? 'block' : 'none'; }
+  function toggleCustomQte(sel){ $('customQteField').style.display = (sel.value==='custom') ? 'block' : 'none'; }
 
   function addToCart(e, prodStr){
     e.preventDefault();
     const prod = JSON.parse(decodeURIComponent(prodStr));
-    const select = document.getElementById('qteSelect');
+    const select = $('qteSelect');
     if(select.value==='custom'){
-      const prix = parseInt(document.getElementById('customPrixInput').value,10);
+      const prix = parseInt($('customPrixInput').value,10);
       if(!prix || isNaN(prix)){ alert("Indiquez un prix personnalisé."); return; }
       cart.push({name:prod.name,cat:prod.cat,price:prix,qte:`${prix}€`,count:1});
     }else{
@@ -383,7 +395,7 @@
 
   function updateCartBtn(){
     const n = cart.reduce((s,i)=>s+i.count,0);
-    const badge = document.getElementById('cartCount');
+    const badge = $('cartCount');
     badge.innerText = n;
     badge.style.display = n>0 ? 'inline-block' : 'none';
   }
@@ -438,7 +450,7 @@
         </div>
         <div class="modal-field">
           <label>Pseudo Telegram ( Mettre le @ avant le pseudo ex: @test)</label>
-          <input class="modal-input" type="text" id="orderUser" required maxlength="24" autocomplete="off" placeholder="@">
+          <input class="modal-input" type="text" id="orderUser" required maxlength="24" autocomplete="off" placeholder="@" value="${escapeHTML(loyaltyUser||'')}">
         </div>
         <div class="modal-field">
           <label>Numéro de téléphone</label>
@@ -457,13 +469,13 @@
 
   async function sendOrder(e){
     e.preventDefault();
-    const tgUser = document.getElementById('orderUser').value.trim();
-    const delivery = document.getElementById('delivery').value;
-    const phone = document.getElementById('orderPhone').value.trim();
-    const address = document.getElementById('orderAddress').value.trim();
+    const tgUser = normUser($('orderUser').value);
+    const delivery = $('delivery').value;
+    const phone = $('orderPhone').value.trim();
+    const address = $('orderAddress').value.trim();
 
-    if(!tgUser.startsWith('@') || tgUser.length<4){
-      document.getElementById('finalError').innerText = "Entrez un pseudo Telegram valide.";
+    if(!tgUser || tgUser.length<4){
+      $('finalError').innerText = "Entrez un pseudo Telegram valide.";
       return;
     }
 
@@ -486,19 +498,77 @@ Adresse : ${address}`;
       });
       if(!r.ok) throw new Error('send-order failed');
 
+      // --- Fidélité : incrémente côté serveur
+      loyaltyUser = tgUser;
+      localStorage.setItem('loyaltyUser', loyaltyUser);
+      let countAfter = null;
+      try {
+        const inc = await fetchJson('/.netlify/functions/loyalty', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ user: loyaltyUser, inc: 1 })
+        });
+        countAfter = inc.count;
+        await refreshLoyaltyChip(loyaltyUser);
+      } catch {}
+
       showModal(`
         <div class="modal-title">Commande envoyée !</div>
         <div class="modal-confirm">
           Merci pour votre commande, elle est en cours de traitement.<br>
           <span style="font-size:1.6em;">✔️</span><br>
+          ${countAfter!=null ? `<div style="margin-top:10px;">Fidélité : <b>${countAfter}</b> / <b>${siteConfig.loyalty?.threshold||5}</b></div>` : ''}
           <button class="modal-btn" onclick="closeModal();cart=[];updateCartBtn();renderProducts();">OK</button>
         </div>
       `);
       cart = [];
       updateCartBtn();
     }catch(err){
-      document.getElementById('finalError').innerText = "Erreur d'envoi. Essaie plus tard.";
+      $('finalError').innerText = "Erreur d'envoi. Essaie plus tard.";
     }
+  }
+
+  // ====== LOYALTY (Fidélité) ======
+  async function refreshLoyaltyChip(user){
+    const data = await fetchJson('/.netlify/functions/loyalty?user='+encodeURIComponent(user));
+    const th = data.threshold || siteConfig.loyalty?.threshold || 5;
+    const chip = $('loyaltyChip');
+    chip.textContent = `Fidélité ${user}: ${data.count}/${th}`;
+    chip.style.display = 'inline-block';
+  }
+
+  function openLoyalty(){
+    const v = loyaltyUser || '';
+    showModal(`
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <div class="modal-title">🎁 Fidélité</div>
+      <form onsubmit="return saveLoyaltyUser(event)">
+        <div class="modal-field">
+          <label>Ton pseudo Telegram (avec @) :</label>
+          <input class="modal-input" id="loyaltyInput" placeholder="@tonpseudo" value="${escapeHTML(v)}" />
+        </div>
+        <button class="modal-btn" type="submit">Voir mes points</button>
+        <div id="loyaltyError" class="modal-error"></div>
+      </form>
+      <div id="loyaltyInfo" style="margin-top:10px;color:var(--muted);"></div>
+    `);
+  }
+
+  async function saveLoyaltyUser(e){
+    e.preventDefault();
+    const u = normUser($('loyaltyInput').value);
+    if(!u || u.length<3){ $('loyaltyError').innerText = "Pseudo invalide."; return false; }
+    loyaltyUser = u;
+    localStorage.setItem('loyaltyUser', loyaltyUser);
+    try{
+      const data = await fetchJson('/.netlify/functions/loyalty?user='+encodeURIComponent(loyaltyUser));
+      const th = data.threshold || siteConfig.loyalty?.threshold || 5;
+      $('loyaltyInfo').innerHTML = `Commandes cumulées : <b>${data.count}</b> / <b>${th}</b> ${siteConfig.loyalty?.reward||'cadeau'}`;
+      await refreshLoyaltyChip(loyaltyUser);
+    }catch(err){
+      $('loyaltyError').innerText = "Impossible de récupérer ta fidélité.";
+    }
+    return false;
   }
 
   // ====== INFO ======
@@ -513,16 +583,12 @@ Adresse : ${address}`;
   }
 
   // ====== MODALE GENERIQUE ======
-  function showModal(html){
-    document.getElementById('modalContent').innerHTML = html;
-    document.getElementById('modalBg').style.display = 'flex';
-  }
-  function closeModal(){ document.getElementById('modalBg').style.display = 'none'; }
-  document.getElementById('modalBg').addEventListener('click', e=>{ if(e.target===e.currentTarget) closeModal(); });
+  function showModal(html){ $('modalContent').innerHTML = html; $('modalBg').style.display = 'flex'; }
+  function closeModal(){ $('modalBg').style.display = 'none'; }
+  $('modalBg').addEventListener('click', e=>{ if(e.target===e.currentTarget) closeModal(); });
 
   // ====== BOTTOM-SHEET DÉTAILS ======
   (function initBottomSheet(){
-    const $ = id => document.getElementById(id);
     const sheet = $('productSheet');
     const overlay = $('psOverlay');
     const elTitle = $('psTitle');
@@ -535,9 +601,7 @@ Adresse : ${address}`;
     const btnAdd = $('psAddBtn');
     const grab = sheet.querySelector('[data-sheet-grab]');
 
-    let currentProduct = null;
-    let startY = null;
-
+    let currentProduct = null, startY = null;
     function lockBody(lock){ document.body.toggleAttribute('data-sheet-lock', !!lock); }
     function imgUrl(p){ return normalizeUrl(p.img || p.image || p.image_url || p.photo || p.picture); }
     function videoUrl(p){ return normalizeUrl(p.video || p.video_url || p.media || p.mp4); }
@@ -566,10 +630,9 @@ Adresse : ${address}`;
       return `<div style="display:grid;place-items:center;height:100%;color:#6b7280;">Aucun média</div>`;
     }
 
-    function openProductSheet(prodStr){
+    window.openProductSheet = (prodStr)=>{
       const p = JSON.parse(decodeURIComponent(prodStr));
       currentProduct = p;
-
       elTitle.textContent = p.name || 'Produit';
       elMedia.innerHTML = media(p);
       elBadges.innerHTML = badges(p);
@@ -581,7 +644,8 @@ Adresse : ${address}`;
       overlay.style.display='block';
       requestAnimationFrame(()=> overlay.classList.add('show'));
       lockBody(true);
-    }
+    };
+
     function closeProductSheet(){
       sheet.classList.remove('open');
       sheet.setAttribute('aria-hidden','true');
@@ -611,15 +675,11 @@ Adresse : ${address}`;
       if(dy>80) closeProductSheet();
     });
 
-    // Ajouter au panier depuis détails
     btnAdd.addEventListener('click', ()=>{
       if(!currentProduct) return;
       chooseQuantity(encodeURIComponent(JSON.stringify(currentProduct)));
       closeProductSheet();
     });
-
-    // Expose global
-    window.openProductSheet = openProductSheet;
   })();
 
   // ====== LANCEMENT ======
@@ -627,4 +687,6 @@ Adresse : ${address}`;
   </script>
 </body>
 </html>
+
+
 
