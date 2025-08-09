@@ -1,391 +1,967 @@
-// functions/telegram.js
-const { getKV, setKV } = require('./supabase');
-
-const JSON_HEADERS = { 'content-type': 'application/json' };
-
-// Admins : ADMIN_IDS (plusieurs IDs séparés par virgule) ou fallback ADMIN_CHAT_ID
-const ADMIN_IDS = (process.env.ADMIN_IDS || process.env.ADMIN_CHAT_ID || '')
-  .split(',')
-  .map(x => x.trim())
-  .filter(Boolean);
-const isAdmin = id => ADMIN_IDS.includes(String(id));
-
-// ---------- Utils Telegram ----------
-async function tgFetch(method, body, TOKEN) {
-  const r = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const text = await r.text().catch(() => '');
-  let json = null;
-  try { json = JSON.parse(text); } catch {}
-  return { ok: r.ok, status: r.status, text, json };
-}
-async function sendMsg(TOKEN, chatId, text, extra = {}) {
-  return tgFetch('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown', ...extra }, TOKEN);
-}
-async function answerCb(TOKEN, cbId, text = '') {
-  return tgFetch('answerCallbackQuery', { callback_query_id: cbId, text, show_alert: false }, TOKEN);
-}
-
-// ---------- UI clavier principal ----------
-function mainKeyboard() {
-  return {
-    reply_markup: {
-      keyboard: [
-        ['➕ Ajouter', '📝 Modifier', '🗑️ Supprimer'],
-        ['🔑 Code d\'accès', '🏠 Message bienvenue', 'ℹ️ Info & consignes']
-      ],
-      resize_keyboard: true,
-      one_time_keyboard: false
-    }
-  };
-}
-async function showMainMenu(TOKEN, chatId) {
-  await sendMsg(TOKEN, chatId, 'Que veux-tu faire ?', mainKeyboard());
-}
-
-// ---------- Wizard produit (effet + arôme inclus) ----------
-const productSteps = [
-  { key: 'name',   ask: v => `Envoie le *NOM* du produit${v ? ` (ou /skip pour garder "${v}")` : ''}` },
-  { key: 'cat',    ask: v => `Catégorie ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
-  { key: 'desc',   ask: v => `Description ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
-  { key: 'effet',  ask: v => `Effet ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
-  { key: 'arome',  ask: v => `Arôme ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
-  { key: 'thclvl', ask: v => `Taux THC (%) ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
-  { key: 'prices', ask: v => `Prix (format : 1g:10,2g:18)\n${Array.isArray(v) && v.length ? `Valeur actuelle : ${v.map(x => x.qte + ':' + x.price).join(', ')}` : ''}\nEnvoie ou /skip pour garder.` },
-  { key: 'img',    ask: v => `URL image ? (ou /skip pour garder "${v || '(aucune)'}")` },
-  { key: 'video',  ask: v => `URL vidéo ? (ou /skip pour garder "${v || '(aucune)'}")` },
-];
-
-// ---------- Inline (éditer / supprimer) ----------
-function inlineEditRow(idx) {
-  return { reply_markup: { inline_keyboard: [[{ text: '✏️ Modifier', callback_data: `edit_${idx}` }]] } };
-}
-function inlineDeleteRow(idx) {
-  return { reply_markup: { inline_keyboard: [[{ text: '🗑️ Supprimer', callback_data: `delete_${idx}` }]] } };
-}
-function inlineConfirmDelete(idx) {
-  return {
-    reply_markup: {
-      inline_keyboard: [[
-        { text: '❌ Annuler',   callback_data: 'cancel_del' },
-        { text: '✅ Confirmer', callback_data: `confirmdel_${idx}` }
-      ]]
-    }
-  };
-}
-
-// ========== HANDLER ==========
-exports.handler = async (event) => {
-  try {
-    const m = event.httpMethod;
-    if (m === 'HEAD')    return { statusCode: 200, headers: JSON_HEADERS };
-    if (m === 'OPTIONS') return { statusCode: 204, headers: JSON_HEADERS, body: '' };
-    if (m !== 'POST')    return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
-
-    const TOKEN = process.env.BOT_TOKEN;
-    if (!TOKEN) return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Missing BOT_TOKEN' }) };
-
-    let update;
-    try { update = JSON.parse(event.body || '{}'); }
-    catch { return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Bad JSON' }) }; }
-
-    // ----- CALLBACK QUERY (inline) -----
-    if (update.callback_query) {
-      const cb = update.callback_query;
-      const chatId = cb.message?.chat?.id;
-      const data = cb.data || '';
-      await answerCb(TOKEN, cb.id);
-
-      if (!isAdmin(chatId)) {
-        await sendMsg(TOKEN, chatId, '⛔ Accès admin requis.');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-
-      let menu = (await getKV('menu')) || [];
-
-      if (data.startsWith('delete_')) {
-        const idx = parseInt(data.split('_')[1], 10);
-        if (!menu[idx]) {
-          await sendMsg(TOKEN, chatId, 'Produit introuvable.');
-        } else {
-          await sendMsg(TOKEN, chatId, `⚠️ Supprimer "*${menu[idx].name}*" ?`, inlineConfirmDelete(idx));
-        }
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-
-      if (data === 'cancel_del') {
-        await sendMsg(TOKEN, chatId, 'Suppression annulée.');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-
-      if (data.startsWith('confirmdel_')) {
-        const idx = parseInt(data.split('_')[1], 10);
-        if (!menu[idx]) {
-          await sendMsg(TOKEN, chatId, 'Produit introuvable.');
-        } else {
-          const name = menu[idx].name || '(sans nom)';
-          menu.splice(idx, 1);
-          await setKV('menu', menu);
-          await sendMsg(TOKEN, chatId, `✅ Produit "*${name}*" supprimé !`);
-        }
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-
-      if (data.startsWith('edit_')) {
-        const idx = parseInt(data.split('_')[1], 10);
-        if (!menu[idx]) {
-          await sendMsg(TOKEN, chatId, 'Produit introuvable.');
-        } else {
-          const stateKey = `state:${chatId}`;
-          await setKV(stateKey, { mode: 'add', submode: 'edit', idx, step: 0, prod: { ...menu[idx] } });
-          const first = productSteps[0];
-          await sendMsg(TOKEN, chatId, `Modification "*${menu[idx].name}*"\n${first.ask(menu[idx].name)}`);
-        }
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // ----- MESSAGE -----
-    const msg = update.message;
-    const chatId = msg?.chat?.id;
-    const txt = (msg?.text || '').trim();
-
-    if (!chatId) return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-
-    // publique
-    if (txt === '/whoami') {
-      await sendMsg(TOKEN, chatId, `Votre chat_id: \`${chatId}\``, mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // admin only
-    if (!isAdmin(chatId)) {
-      await sendMsg(TOKEN, chatId, '⛔ Accès admin requis.');
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // données
-    const stateKey = `state:${chatId}`;
-    let state = (await getKV(stateKey)) || { mode: null, step: 0, prod: null };
-    let menu = (await getKV('menu')) || [];
-    let conf = (await getKV('site_config')) || { access_code: '1234', welcome: '', info: '' };
-
-    // accueil
-    if (txt === '/start' || txt === '/help') {
-      await showMainMenu(TOKEN, chatId);
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // ===== Boutons du menu principal =====
-    if (txt === '➕ Ajouter') {
-      state = { mode: 'add', submode: 'create', step: 0, prod: { prices: [] } };
-      await setKV(stateKey, state);
-      const s = productSteps[0];
-      await sendMsg(TOKEN, chatId, s.ask(''), mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    if (txt === '📝 Modifier') {
-      if (!menu.length) {
-        await sendMsg(TOKEN, chatId, 'Aucun produit à modifier.', mainKeyboard());
-      } else {
-        for (let i = 0; i < menu.length; i++) {
-          const p = menu[i];
-          const line = `#${i + 1} - ${p.name || '(sans nom)'} ${p.cat ? `(${p.cat})` : ''}`;
-          await sendMsg(TOKEN, chatId, line, inlineEditRow(i));
-        }
-      }
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    if (txt === '🗑️ Supprimer') {
-      if (!menu.length) {
-        await sendMsg(TOKEN, chatId, 'Aucun produit à supprimer.', mainKeyboard());
-      } else {
-        for (let i = 0; i < menu.length; i++) {
-          const p = menu[i];
-          const line = `#${i + 1} - ${p.name || '(sans nom)'} ${p.cat ? `(${p.cat})` : ''}`;
-          await sendMsg(TOKEN, chatId, line, inlineDeleteRow(i));
-        }
-      }
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    if (txt === '🔑 Code d\'accès') {
-      state = { mode: 'config_set', key: 'access_code' };
-      await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, `Code actuel : ${conf.access_code}\nEnvoie le *nouveau code* (2–16 caractères).`, mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    if (txt === '🏠 Message bienvenue') {
-      state = { mode: 'config_set', key: 'welcome' };
-      await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, `Message actuel :\n${conf.welcome || '(vide)'}\n\nEnvoie le *nouveau message de bienvenue*.`, mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    if (txt === 'ℹ️ Info & consignes') {
-      state = { mode: 'config_set', key: 'info' };
-      await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, `Texte actuel :\n${conf.info || '(vide)'}\n\nEnvoie les *nouvelles infos & consignes*.`, mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // cancel
-    if (txt === '/cancel' || txt === '/annuler') {
-      state = { mode: null, step: 0, prod: null };
-      await setKV(stateKey, state);
-      await sendMsg(TOKEN, chatId, 'Annulé.', mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // ===== Mode config_set =====
-    if (state.mode === 'config_set' && state.key) {
-      const key = state.key;
-      if (key === 'access_code') {
-        if (!/^\w{2,16}$/.test(txt)) {
-          await sendMsg(TOKEN, chatId, 'Le code doit faire 2–16 caractères alphanumériques. Réessaie ou /annuler.');
-          return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-        }
-      }
-      conf[key] = txt;
-      await setKV('site_config', conf);
-      await setKV(stateKey, { mode: null, step: 0, prod: null });
-      await sendMsg(TOKEN, chatId, `✅ ${key} mis à jour !`, mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // ===== Wizard d'ajout / édition =====
-    if (state.mode === 'add') {
-      const step = state.step || 0;
-      const prod = state.prod || {};
-      const current = productSteps[step];
-
-      if (!current) {
-        // fin
-        if (state.submode === 'create') menu.push(prod);
-        if (state.submode === 'edit')   menu[state.idx] = prod;
-        await setKV('menu', menu);
-        await setKV(stateKey, { mode: null, step: 0, prod: null });
-        await sendMsg(TOKEN, chatId, state.submode === 'create' ? '✅ Produit ajouté !' : `✅ Produit "${prod.name}" modifié !`, mainKeyboard());
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-
-      if (txt !== '/skip') {
-        if (current.key === 'prices') {
-          prod.prices = txt
-            ? txt.split(',').map(s => {
-                const [qte, price] = s.split(':');
-                return { qte: (qte || '').trim(), price: Number((price || '').trim()) };
-              }).filter(x => x.qte && !isNaN(x.price))
-            : [];
-        } else if (current.key === 'thclvl') {
-          const num = Number(txt);
-          if (!isNaN(num)) prod.thclvl = num;
-        } else {
-          // name, cat, desc, effet, arome, img, video
-          prod[current.key] = txt;
-        }
-      }
-
-      const nextStep = step + 1;
-      const next = productSteps[nextStep];
-      await setKV(stateKey, { ...state, step: nextStep, prod });
-
-      if (next) {
-        const val = prod[next.key];
-        const question = typeof next.ask === 'function' ? next.ask(val) : next.ask;
-        await sendMsg(TOKEN, chatId, question);
-      } else {
-        await sendMsg(TOKEN, chatId, 'Tape /done pour enregistrer, ou /annuler pour annuler.');
-      }
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    if (txt === '/done') {
-      if (state.mode !== 'add' || !state.prod) {
-        await sendMsg(TOKEN, chatId, 'Rien à enregistrer. Tape "➕ Ajouter" pour commencer.', mainKeyboard());
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      const prod = state.prod;
-      if (!prod.name) {
-        await sendMsg(TOKEN, chatId, 'Nom manquant. /annuler pour quitter.');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      if (state.submode === 'create') menu.push(prod);
-      if (state.submode === 'edit')   menu[state.idx] = prod;
-      await setKV('menu', menu);
-      await setKV(stateKey, { mode: null, step: 0, prod: null });
-      await sendMsg(TOKEN, chatId, state.submode === 'create' ? '✅ Produit ajouté !' : `✅ Produit "${prod.name}" modifié !`, mainKeyboard());
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // ----- /menu (liste simple) -----
-    if (txt === '/menu') {
-      const list = menu.length
-        ? menu.map((p, i) => `${i + 1}. *${p.name || '(sans nom)'}* ${p.cat ? `— ${p.cat}` : ''}`).join('\n')
-        : '(vide)';
-      await sendMsg(TOKEN, chatId, `Menu:\n${list}`);
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // ----- /edit N champ valeur...  (inclut effet + arome) -----
-    if (txt.startsWith('/edit ')) {
-      const parts = txt.split(' ');
-      if (parts.length < 4) {
-        await sendMsg(TOKEN, chatId, 'Format: `/edit N champ valeur...`\nchamps: name, cat, desc, effet, arome, thclvl, prices, img, video');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      const n = parseInt(parts[1], 10);
-      const field = parts[2];
-      const value = txt.split(' ').slice(3).join(' ');
-      if (!Number.isInteger(n) || n < 1 || n > menu.length) {
-        await sendMsg(TOKEN, chatId, 'Index N invalide.');
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      const item = menu[n - 1];
-      const allowed = ['name','cat','desc','effet','arome','thclvl','prices','img','video'];
-      if (!allowed.includes(field)) {
-        await sendMsg(TOKEN, chatId, `Champ invalide. Utilise: ${allowed.join(', ')}`);
-        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-      }
-      if (field === 'thclvl') {
-        const num = Number(value);
-        if (isNaN(num)) {
-          await sendMsg(TOKEN, chatId, 'thclvl doit être un nombre (ex: 18)');
-          return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-        }
-        item.thclvl = num;
-      } else if (field === 'prices') {
-        item.prices = value
-          ? value.split(',').map(x => {
-              const [qte, price] = x.split(':');
-              return { qte: (qte || '').trim(), price: Number(price) };
-            }).filter(x => x.qte && !isNaN(x.price))
-          : [];
-      } else {
-        item[field] = value; // name, cat, desc, effet, arome, img, video
-      }
-      menu[n - 1] = item;
-      await setKV('menu', menu);
-      await sendMsg(TOKEN, chatId, `✏️ Édité #${n} \`${field}\`.`);
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-    }
-
-    // défaut : réaffiche le menu
-    await showMainMenu(TOKEN, chatId);
-    return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
-
-  } catch (err) {
-    return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Internal error', details: String(err?.message || err) }) };
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Side Industry 2.1 — MiniApp</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+  :root {
+    --bg: #161c25;
+    --header-bg: linear-gradient(90deg, #22283a 50%, #472f85 100%);
+    --card-bg: #232a3c;
+    --primary: #FFD600;
+    --accent: #7c5ee6;
+    --text: #fafafa;
+    --muted: #9aa2bc;
+    --green: #4eea89;
+    --danger: #e25454;
   }
-};
 
+  /* ----- Base ----- */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Roboto', Arial, sans-serif;
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+  * { box-sizing: border-box; }
 
+  /* ----- Overlay d'accès ----- */
+  #accessOverlay {
+    position: fixed;
+    top: 0; left: 0; width: 100vw; height: 100vh;
+    background: #181f2fdc;
+    z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #accessOverlay .access-box {
+    background: var(--card-bg);
+    padding: 34px 18px 24px 18px;
+    border-radius: 17px;
+    box-shadow: 0 7px 36px #000b;
+    text-align: center;
+    min-width: 240px; max-width: 96vw;
+    width: 98vw;
+  }
+  #accessOverlay .access-title {
+    color: var(--primary);
+    font-size: 1.19rem;
+    font-weight: bold;
+    margin-bottom: 14px;
+    letter-spacing: 0.05em;
+  }
+  #accessOverlay .access-input {
+    width: 94%;
+    padding: 13px 11px;
+    margin-top: 14px;
+    font-size: 1.12rem;
+    border-radius: 8px;
+    border: 1.5px solid #323e5a;
+    background: #1b2130;
+    color: var(--text);
+  }
+  #accessOverlay .access-btn {
+    margin-top: 19px;
+    background: var(--accent);
+    color: var(--primary);
+    font-weight: 700;
+    border: none;
+    border-radius: 9px;
+    padding: 12px 24px;
+    font-size: 1.08rem;
+    cursor: pointer;
+    width: 94%;
+  }
+  #accessOverlay .access-btn:active {
+    background: var(--primary); color: #181f2d;
+  }
+  #accessOverlay .access-error {
+    margin-top: 9px; color: var(--danger); font-size: 1rem;
+  }
 
+  /* ----- Header ----- */
+  .tg-header {
+    display: flex; align-items: center;
+    background: var(--header-bg);
+    padding: 14px 0 10px 0;
+    justify-content: center;
+    box-shadow: 0 1.5px 9px #0008;
+    position: sticky; top: 0; z-index: 50;
+  }
+  .tg-logo {
+    width: 32px; height: 32px;
+    border-radius: 10px; object-fit: cover;
+    margin-right: 12px;
+  }
+  .tg-title {
+    font-family: 'Montserrat', Arial, sans-serif;
+    font-weight: 900;
+    font-size: 1.19rem;
+    color: var(--primary);
+    letter-spacing: 1.1px;
+    margin-right: 7px;
+  }
+  .tg-miniapp {
+    background: #111b2580;
+    color: var(--primary);
+    font-size: 0.89rem;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 2px 11px 3px 11px;
+    font-family: 'Montserrat', Arial, sans-serif;
+  }
+
+  /* ----- Menu top (config) ----- */
+  .menu-top {
+    max-width: 480px;
+    margin: 17px auto 12px auto;
+    padding: 0 6vw;
+    display: flex;
+    justify-content: flex-end;
+    gap: 9px;
+  }
+  .menu-btn {
+    background: #22283a;
+    color: var(--primary);
+    border: none;
+    border-radius: 13px;
+    padding: 8px 16px;
+    font-size: 1rem;
+    font-family: 'Montserrat', Arial, sans-serif;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.18s;
+  }
+  .menu-btn:active { background: var(--accent); color: var(--text); }
+
+  /* ----- Welcome ----- */
+  .welcome {
+    margin: 12px auto 13px auto;
+    padding: 0 4vw;
+    max-width: 390px;
+    font-size: 1.02rem;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  /* ----- Section Title ----- */
+  .section-title {
+    color: var(--primary);
+    text-align: center;
+    font-size: 1.14rem;
+    letter-spacing: 0.13em;
+    margin: 7px 0 11px 0;
+    font-family: 'Montserrat', Arial, sans-serif;
+    font-weight: 700;
+  }
+
+  /* ----- Filtres ----- */
+  .filters {
+    display: flex; justify-content: center; gap: 8px; margin: 0 0 14px 0; flex-wrap: wrap;
+  }
+  .filter-btn {
+    background: #232a3c;
+    color: var(--muted);
+    border: none;
+    border-radius: 11px;
+    padding: 8px 14px;
+    font-size: 1.02rem;
+    cursor: pointer;
+    font-weight: 600;
+    outline: none;
+    transition: background 0.2s, color 0.2s;
+    margin-bottom: 6px;
+  }
+  .filter-btn.active, .filter-btn:active {
+    background: var(--accent);
+    color: var(--primary);
+  }
+
+  /* ----- Grid Produits ----- */
+  .products-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 17px;
+    max-width: 500px;
+    margin: 0 auto 56px auto;
+    padding: 0 4vw;
+  }
+  @media (min-width:600px) {
+    .products-grid {
+      grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+      gap: 20px;
+      max-width: 870px;
+    }
+  }
+
+  /* ----- Carte Produit ----- */
+  .product-card {
+    background: var(--card-bg);
+    border-radius: 18px;
+    box-shadow: 0 4px 18px #000b;
+    padding: 0 0 15px 0;
+    display: flex; flex-direction: column;
+    min-height: 298px;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 0px;
+    transition: box-shadow 0.16s;
+  }
+  .product-card:active {
+    box-shadow: 0 2px 9px #0004;
+    outline: 1.5px solid var(--accent);
+  }
+  .card-img {
+    width: 100%;
+    height: 135px;
+    object-fit: cover;
+    border-radius: 18px 18px 0 0;
+    margin-bottom: 0px;
+    background: #181f2d;
+  }
+  .product-type {
+    position: absolute; top: 11px; left: 11px;
+    background: #222d43ee;
+    color: var(--muted);
+    font-size: 0.89rem;
+    border-radius: 8px;
+    padding: 2px 11px;
+    font-weight: 700;
+    z-index: 2;
+  }
+  .product-name {
+    margin: 10px 0 0px 0;
+    font-family: 'Montserrat', Arial, sans-serif;
+    font-weight: 900;
+    color: var(--primary);
+    font-size: 1.09rem;
+    letter-spacing: 0.01em;
+  }
+  .product-price {
+    color: var(--muted);
+    font-size: 1.01rem;
+    margin-bottom: 5px;
+    font-weight: 700;
+  }
+  .product-promo {
+    color: var(--green);
+    font-size: 1.02rem;
+    font-weight: bold;
+    margin: 3px 0 2px 0;
+  }
+
+  /* ----- Boutons ----- */
+  .order-btn {
+    background: linear-gradient(90deg,#8a63fa,#7043d4 90%);
+    color: #ffd700;
+    border: none;
+    font-size: 1.15rem;
+    font-weight: bold;
+    border-radius: 14px;
+    padding: 16px 0;
+    cursor: pointer;
+    margin: 30px auto 4px auto;
+    width: 96%;
+    box-shadow: 0 2px 12px #0003;
+    letter-spacing: 0.2px;
+    transition: background .18s,box-shadow .18s;
+  }
+  .order-btn:hover {
+    background: linear-gradient(90deg,#6a43d4,#8a63fa 90%);
+    box-shadow: 0 3px 18px #8857ee99;
+  }
+  .order-btn:active { background: var(--primary); color: #181f2d; }
+  .details-btn {
+    margin-top: 8px;
+    background: var(--card-bg);
+    color: var(--primary);
+    border: 2px solid var(--primary);
+    font-weight: 700;
+    border-radius: 11px;
+    padding: 8px 0;
+    cursor: pointer;
+    font-size: 1.03rem;
+    width: 93%;
+    align-self: center;
+    transition: background 0.18s, color 0.17s, border 0.14s;
+  }
+  .details-btn:active { background: var(--primary); color: #232a3c;}
+
+  /* ----- Bouton Panier flottant ----- */
+  .cart-float-btn {
+    position: fixed; right: 16px; bottom: 18px; z-index: 120;
+    background: var(--primary);
+    color: #232a3c;
+    border-radius: 20px;
+    box-shadow: 0 4px 24px #0009, 0 2.5px 12px #FFD60022;
+    padding: 0; width: 48px; height: 48px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 2.08rem; cursor: pointer;
+    transition: background 0.18s, color 0.17s, transform 0.16s;
+    border: none;
+  }
+  .cart-count-badge {
+    background: var(--danger); color: white; font-size: 0.93rem;
+    border-radius: 13px; padding: 0 7px; font-weight: 700;
+    position: absolute; top: 5px; right: 6px; z-index: 10;
+  }
+
+  /* ----- Modale générique ----- */
+  .modal-bg {
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+    background: #10141bde; z-index: 2000;
+    display: none; align-items: center; justify-content: center; transition: opacity 0.21s;
+  }
+  .modal-content {
+    background: var(--card-bg); color: var(--text);
+    border-radius: 13px;
+    padding: 24px 8vw 16px 8vw;
+    min-width: 0; max-width: 97vw;
+    width: 96vw;
+    box-shadow: 0 7px 36px #000c;
+    position: relative; text-align: center;
+  }
+  .modal-close {
+    position: absolute; top: 12px; right: 16px; font-size: 1.5rem; color: var(--muted); cursor: pointer; background: none; border: none; z-index: 3;
+  }
+  .modal-title {
+    font-size: 2.1rem;
+    font-weight: 800;
+    color: #ffd700;
+    letter-spacing: 0.5px;
+  }
+  .modal-field { display: flex; flex-direction: column; align-items: flex-start; margin: 13px 0 4px 0;}
+  .modal-field label { font-size: 0.98rem; font-weight: 500; margin-bottom: 3px; color: var(--muted);}
+  .modal-input, select.modal-input, textarea.modal-input {
+    width: 100%; padding: 10px 11px; font-size: 1.07rem;
+    border-radius: 7px; border: 1.5px solid #323e5a;
+    background: #1b2130; color: var(--text); font-family: inherit; margin-bottom: 3px; resize: none;
+  }
+  .modal-btn { margin-top: 13px; background: var(--accent); color: var(--primary); font-weight: 700; border: none; border-radius: 9px; padding: 11px 10px; font-size: 1.09rem; cursor: pointer;}
+  .modal-btn:active { background: var(--primary); color: #181f2d;}
+  .modal-confirm { color: var(--green); margin-top: 11px;}
+  .modal-error { color: var(--danger); font-size: 0.96rem; margin-top: 5px;}
+
+  /* ----- Mobile Responsive ----- */
+  @media (max-width: 700px) {
+    .modal-title { font-size: 1.3rem; }
+    .order-btn { font-size: 1.05rem; padding: 14px 0; width: 100%; margin: 22px 0 2px 0; }
+  }
+  @media (max-width: 500px) {
+    .tg-header { padding: 11px 0 7px 0; }
+    .tg-logo { width: 26px; height: 26px; margin-right: 7px;}
+    .tg-title { font-size: 1.03rem; }
+    .menu-top { padding: 0 2vw; }
+    .products-grid { padding: 0 1vw; }
+    .product-card { border-radius: 13px; }
+    .card-img { border-radius: 13px 13px 0 0; height: 115px; }
+    .modal-content { padding: 17px 2vw 10px 2vw; }
+  }
+  @media (max-width: 430px) {
+    .modal-title { font-size: 1.02rem; }
+    .order-btn { font-size: 0.96rem; padding: 11px 0; }
+  }
+  </style>
+
+  <!-- ===== CSS Bottom-Sheet Détails ===== -->
+  <style id="product-sheet-css">
+  :root{
+    --sheet-max-h: 85vh;
+    --sheet-radius: 16px;
+    --sheet-overlay: rgba(0,0,0,.55);
+    --sheet-chip: #1c2230;
+    --sheet-muted: #9aa2bc;
+  }
+  @media (prefers-color-scheme: light){
+    :root { --sheet-chip:#eef2f6; --sheet-muted:#667085; }
+  }
+  .sheet-overlay{
+    position: fixed; inset: 0;
+    background: var(--sheet-overlay);
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s ease;
+    z-index: 9998;
+  }
+  .sheet{
+    position: fixed; left: 0; right: 0; bottom: 0;
+    transform: translateY(100%);
+    transition: transform .25s ease;
+    z-index: 9999;
+    display: grid; place-items: end;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .sheet.open{ transform: translateY(0); }
+  .sheet.open + .sheet-overlay{ opacity: 1; pointer-events: auto; }
+  .sheet-panel{
+    width: 100%;
+    max-height: var(--sheet-max-h);
+    border-top-left-radius: var(--sheet-radius);
+    border-top-right-radius: var(--sheet-radius);
+    background: var(--card-bg);
+    color: inherit;
+    box-shadow: 0 -10px 30px rgba(0,0,0,.35);
+    overflow: hidden; display: grid; grid-template-rows: auto auto 1fr auto;
+  }
+  .sheet-header{
+    position: sticky; top: 0; z-index: 2;
+    background: inherit;
+    padding: 10px 16px 6px;
+  }
+  .sheet-handle{
+    width: 48px; height: 5px; border-radius: 999px;
+    margin: 6px auto 10px; background: #39424c; opacity: .6;
+  }
+  .sheet-title{
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 4px 8px;
+  }
+  .sheet-title h3{
+    font-size: 18px; margin: 0; line-height: 1.2; flex: 1; color: var(--primary);
+  }
+  .sheet-close{
+    border: 0; background: transparent; color: var(--text); font-size: 22px;
+    width: 36px; height: 36px; border-radius: 8px; cursor: pointer;
+  }
+  .sheet-media{ aspect-ratio: 16/10; background:#0b0f14; }
+  .sheet-media img, .sheet-media video{ width:100%; height:100%; object-fit: cover; display:block; }
+  .sheet-content{
+    overflow: auto; -webkit-overflow-scrolling: touch;
+    padding: 12px 16px 8px;
+    display: grid; gap: 12px;
+  }
+  .badges{ display:flex; flex-wrap:wrap; gap:8px; }
+  .badge{
+    font-size: 12px; padding: 6px 10px; border-radius: 999px;
+    background: var(--sheet-chip); color: inherit; display:inline-flex; align-items:center; gap:6px;
+  }
+  .sheet-desc{ color: var(--sheet-muted); line-height: 1.5; }
+  .price-grid{ display: grid; grid-template-columns: repeat(auto-fit,minmax(90px,1fr)); gap: 8px; }
+  .price-chip{
+    background: var(--sheet-chip); border-radius: 12px; padding: 10px 12px;
+    display:flex; justify-content: space-between; align-items:center; gap:10px; font-weight: 700;
+  }
+  .price-chip small{ color: var(--sheet-muted); font-weight: 600; }
+  .sheet-footer{
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: linear-gradient( to bottom, transparent, rgba(0,0,0,.05) 30%);
+    display:flex; gap:10px;
+  }
+  .sheet-btn{ flex:1; padding: 12px 16px; border-radius: 12px; border:0; font-weight:700; cursor:pointer; }
+  .sheet-btn.primary{ background: var(--accent); color: var(--primary); }
+  .sheet-btn:active{ transform: translateY(1px); }
+  @media (min-width: 860px){
+    .sheet{ place-items: center; }
+    .sheet-panel{ width: min(760px, 92vw); border-radius: 16px; max-height: 86vh; }
+    .sheet-handle{ display:none; }
+  }
+  body[data-sheet-lock]{ overflow: hidden; touch-action: none; }
+  </style>
+</head>
+<body>
+  <!-- Overlay Accès privé -->
+  <div id="accessOverlay">
+    <div class="access-box">
+      <img src="https://files.catbox.moe/lkfhrl.jpeg" alt="Logo" style="width:85px; height:auto; border-radius:15px; margin-bottom:13px; box-shadow:0 4px 12px #0005; display:block; margin-left:auto; margin-right:auto;">
+      <div class="access-title">Accès privé Side Industry 2.1</div>
+      <form onsubmit="validateAccess(); return false;">
+        <div>Entrer le code d'accès pour voir le menu :</div>
+        <input id="accessCode" class="access-input" type="password" maxlength="10" placeholder="Code secret" />
+        <br>
+        <button class="access-btn" type="submit">Entrer</button>
+      </form>
+      <div id="accessError" class="access-error"></div>
+    </div>
+  </div>
+
+  <!-- HEADER -->
+  <div class="tg-header">
+    <img src="https://files.catbox.moe/lkfhrl.jpeg" alt="logo" class="tg-logo" />
+    <span class="tg-title">Side Industry 2.1</span>
+    <span class="tg-miniapp">mini-application</span>
+  </div>
+
+  <!-- TOP MENU -->
+  <div class="menu-top">
+    <button class="menu-btn" onclick="openInfo()">Info & Consignes</button>
+  </div>
+
+  <div class="welcome" id="welcomeMessage"></div>
+
+  <div class="section-title">CATÉGORIES</div>
+  <div class="filters" id="filtersBar"></div>
+
+  <div class="products-grid" id="productsGrid"></div>
+
+  <!-- PANIER FLOAT BTN -->
+  <button class="cart-float-btn" id="openCartBtn" onclick="openCart()">
+    🛒
+    <span class="cart-count-badge" id="cartCount" style="display:none">0</span>
+  </button>
+
+  <!-- MODALE GENERIQUE -->
+  <div id="modalBg" class="modal-bg">
+    <div id="modalContent" class="modal-content"></div>
+  </div>
+
+  <!-- ===== Bottom Sheet Détails Produit ===== -->
+  <div id="productSheet" class="sheet" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="sheet-panel">
+      <div class="sheet-header" data-sheet-grab>
+        <div class="sheet-handle"></div>
+        <div class="sheet-title">
+          <h3 id="psTitle">Produit</h3>
+          <button class="sheet-close" aria-label="Fermer" id="psCloseBtn">✕</button>
+        </div>
+      </div>
+
+      <div class="sheet-media" id="psMedia"></div>
+
+      <div class="sheet-content">
+        <div class="badges" id="psBadges"></div>
+        <div class="sheet-desc" id="psDesc"></div>
+        <div class="price-grid" id="psPrices"></div>
+      </div>
+
+      <div class="sheet-footer">
+        <button class="sheet-btn" id="psCancelBtn">Fermer</button>
+        <button class="sheet-btn primary" id="psAddBtn">Ajouter au panier</button>
+      </div>
+    </div>
+  </div>
+  <div class="sheet-overlay" id="psOverlay"></div>
+
+  <script>
+  // === VARIABLES GLOBALES ===
+  let siteConfig = { access_code: '1234', welcome: '', info: '' };
+  let menu = [];
+  let allowedCats = [];
+  let cart = [];
+
+  // === OUTILS ===
+  function escapeHTML(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function normalizeUrl(u){
+    if (!u) return '';
+    u = String(u).trim();
+    if (u.startsWith('//')) return 'https:' + u;
+    if (u.startsWith('http://')) return u.replace('http://','https://');
+    return u;
+  }
+
+  // === FETCH ROBUSTE (évite le "Unexpected token '<'") ===
+  async function fetchJson(url){
+    const res = await fetch(url);
+    if (!res.ok) {
+      const txt = await res.text().catch(()=> '');
+      throw new Error('HTTP '+res.status+' — '+txt.slice(0,200));
+    }
+    const ct = (res.headers.get('content-type') || '');
+    if (!ct.includes('application/json')) {
+      const txt = await res.text().catch(()=> '');
+      throw new Error('Mauvais content-type: '+ct+' — Aperçu: '+txt.slice(0,120));
+    }
+    return res.json();
+  }
+
+  // === CHARGEMENT MENU + CONFIG (avec fallback config.js → site-config) ===
+  async function loadAllConfig() {
+    try {
+      const [menuData, conf] = await Promise.all([
+        fetchJson('/.netlify/functions/menu'),
+        (async () => {
+          try { return await fetchJson('/.netlify/functions/config.js'); }
+          catch { return await fetchJson('/.netlify/functions/site-config'); }
+        })()
+      ]);
+      menu = Array.isArray(menuData) ? menuData : [];
+      siteConfig = conf && typeof conf === 'object' ? conf : siteConfig;
+
+      document.getElementById('welcomeMessage').innerHTML = siteConfig.welcome || "";
+
+      updateAllowedCats();
+      generateFilters();
+      renderProducts();
+    } catch (err) {
+      console.error('loadAllConfig failed:', err);
+      alert("API indisponible (menu/config). Vérifie le déploiement des Functions.\n" + err.message);
+    }
+  }
+
+  // === ACCÈS AVEC CODE ===
+  function validateAccess() {
+    const code = document.getElementById('accessCode').value.trim();
+    if (code === siteConfig.access_code) {
+      document.getElementById('accessOverlay').style.display = 'none';
+      document.getElementById('accessError').innerText = "";
+    } else {
+      document.getElementById('accessError').innerText = "Code incorrect !";
+    }
+  }
+
+  // === CATÉGORIES ===
+  function updateAllowedCats() {
+    allowedCats = [...new Set(menu.map(p => p.cat))].filter(Boolean);
+  }
+
+  // === FILTRES ===
+  function generateFilters() {
+    let html = `<button class="filter-btn active" onclick="filterProducts('all', this)">Tous les produits</button>`;
+    allowedCats.forEach(cat => {
+      html += `<button class="filter-btn" onclick="filterProducts('${String(cat).replace(/'/g,"\\'")}', this)">${escapeHTML(cat)}</button>`;
+    });
+    document.getElementById('filtersBar').innerHTML = html;
+  }
+
+  // === RENDER CARDS ===
+  function renderProducts(filterCat = 'all') {
+    let productsHtml = "";
+    let filteredMenu = menu.filter(prod => !allowedCats.length || allowedCats.includes(prod.cat));
+    if (filterCat && filterCat !== "all") {
+      filteredMenu = filteredMenu.filter(prod => prod.cat === filterCat);
+    }
+    if(filteredMenu.length === 0) {
+      productsHtml = `<div style="color:#FFD600;padding:22px 0;text-align:center;">Aucun produit dans cette catégorie.</div>`;
+    } else {
+      filteredMenu.forEach((prod) => {
+        const mediaHtml =
+          prod.img
+            ? `<img class="card-img" src="${normalizeUrl(prod.img)}" alt="photo ${escapeHTML(prod.name||'')}" referrerpolicy="no-referrer">`
+            : (prod.video ? `<video class="card-img" src="${normalizeUrl(prod.video)}" muted autoplay loop playsinline style="object-fit:cover;background:#000"></video>` : "");
+        productsHtml += `
+          <div class="product-card" data-type="${escapeHTML(prod.cat||'')}">
+            <div class="product-type">${escapeHTML(prod.cat||'')}</div>
+            ${mediaHtml}
+            <div style="padding:0 17px;">
+              <div class="product-name">${escapeHTML(prod.name||'')}</div>
+              <div class="product-price">${escapeHTML(prod.desc||"")}</div>
+              ${prod.promo ? `<div class="product-promo">${escapeHTML(prod.promo)}</div>` : ""}
+              <button class="order-btn" onclick="chooseQuantity('${encodeURIComponent(JSON.stringify(prod))}')">Ajouter au panier</button>
+              <button class="details-btn" onclick="openProductSheet('${encodeURIComponent(JSON.stringify(prod))}')">Détails</button>
+            </div>
+          </div>
+        `;
+      });
+    }
+    document.getElementById('productsGrid').innerHTML = productsHtml;
+  }
+
+  // === FILTRES UI ===
+  function filterProducts(cat, el) {
+    document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+    if (el) el.classList.add('active');
+    renderProducts(cat);
+  }
+
+  // === CHOIX QUANTITÉ ===
+  function chooseQuantity(prodStr) {
+    let prod = JSON.parse(decodeURIComponent(prodStr));
+    let prixOptions = Array.isArray(prod.prices) ? prod.prices : [];
+    let qteHtml = `
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <div class="modal-title">Sélectionnez la quantité</div>
+      <div style="margin-bottom:6px; color:var(--muted);"><b>${escapeHTML(prod.name||'')}</b></div>
+      <form id="addCartForm" autocomplete="off" onsubmit="addToCart(event, '${encodeURIComponent(JSON.stringify(prod))}')">
+        <div class="modal-field">
+          <label for="qteSelect">Quantité :</label>
+          <select class="modal-input" id="qteSelect" required onchange="toggleCustomQte(this)">
+            ${prixOptions.map((p, i)=>`<option value="${i}">${escapeHTML(p.qte||'')} — ${Number(p.price).toLocaleString()}€</option>`).join("")}
+            <option value="custom">Personnalisé...</option>
+          </select>
+        </div>
+        <div class="modal-field" id="customQteField" style="display:none;">
+          <label>Prix personnalisé (€):</label>
+          <input class="modal-input" type="number" id="customPrixInput" step="1" min="1" max="9999" placeholder="ex: 40, 50, 60">
+        </div>
+        <button class="modal-btn" type="submit">Ajouter au panier</button>
+      </form>
+    `;
+    showModal(qteHtml);
+  }
+  function toggleCustomQte(sel){
+    let show = sel.value === "custom";
+    document.getElementById('customQteField').style.display = show ? "block" : "none";
+  }
+
+  // === AJOUTER AU PANIER ===
+  function addToCart(e, prodStr) {
+    e.preventDefault();
+    let prod = JSON.parse(decodeURIComponent(prodStr));
+    let select = document.getElementById('qteSelect');
+    if (select.value === "custom") {
+      let prix = parseInt(document.getElementById('customPrixInput').value, 10);
+      if(!prix || isNaN(prix)) {
+        alert("Indiquez un prix personnalisé.");
+        return;
+      }
+      cart.push({name: prod.name, cat: prod.cat, price: prix, qte: `${prix}€`, count: 1});
+    } else {
+      let idx = parseInt(select.value, 10);
+      let priceObj = (Array.isArray(prod.prices) ? prod.prices[idx] : null);
+      if (!priceObj) { alert("Prix indisponible."); return; }
+      let found = cart.find(item=>item.name===prod.name && item.qte===priceObj.qte);
+      if(found) found.count++;
+      else cart.push({name: prod.name, cat: prod.cat, price: Number(priceObj.price)||0, qte: priceObj.qte, count: 1});
+    }
+    closeModal();
+    updateCartBtn();
+  }
+
+  // === MAJ BOUTON PANIER ===
+  function updateCartBtn() {
+    let n = cart.reduce((sum, item)=>sum+item.count, 0);
+    let badge = document.getElementById('cartCount');
+    badge.innerText = n;
+    badge.style.display = n > 0 ? "inline-block" : "none";
+  }
+
+  // === PANIER ===
+  function openCart() {
+    let n = cart.reduce((sum, item)=>sum+item.count, 0);
+    let html = `<button class="modal-close" onclick="closeModal()">&times;</button><div class="modal-title">Votre panier</div>`;
+    if(n === 0) {
+      html += `<div style="color:var(--muted);margin-bottom:12px;">Votre panier est vide.</div>
+        <button class="modal-btn" onclick="closeModal()">Fermer</button>`;
+      showModal(html); return;
+    }
+    html += `<div style="text-align:left;">${cart.map((item, i)=>`
+      <div style="margin-bottom:7px;">
+        <b>${escapeHTML(item.name||'')}</b> (${escapeHTML(item.qte||'')}) x${item.count}
+        <span style="color:var(--green);float:right;">${(Number(item.price)||0)*item.count}€</span><br>
+        <a href="#" onclick="removeCart(${i});event.preventDefault();" style="font-size:0.97em;color:var(--danger);">Supprimer</a>
+      </div>
+    `).join("")}</div>`;
+    html += `<div style="font-size:1.13em;margin-top:13px;"><b>Total :</b> <span style="color:var(--primary);font-weight:900;">${cart.reduce((s,i)=>s+(Number(i.price)||0)*i.count,0)}€</span></div>`;
+    html += `<button class="modal-btn" onclick="checkout()">Finaliser la commande</button>
+      <button class="details-btn" onclick="closeModal()" style="margin-top:8px;">Continuer mes achats</button>`;
+    showModal(html);
+  }
+  function removeCart(idx) {
+    cart.splice(idx, 1);
+    closeModal();
+    updateCartBtn();
+    openCart();
+  }
+
+  // === CHECKOUT ===
+  function checkout() {
+    let html = `
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <div class="modal-title">Finaliser la commande</div>
+      <div style="margin-bottom:6px;text-align:left;">
+        ${cart.map(item=>`
+          <div><b>${escapeHTML(item.name||'')}</b> (${escapeHTML(item.qte||'')}) x${item.count} <span style="color:var(--green);float:right;">${(Number(item.price)||0)*item.count}€</span></div>
+        `).join("")}
+        <div style="font-size:1.09em;margin-top:7px;"><b>Total :</b> <span style="color:var(--primary);font-weight:900;">${cart.reduce((s,i)=>s+(Number(i.price)||0)*i.count,0)}€</span></div>
+      </div>
+      <form id="finalForm" autocomplete="off" onsubmit="sendOrder(event)">
+        <div class="modal-field">
+          <label for="delivery">Livraison :</label>
+          <select class="modal-input" id="delivery" required>
+            <option value="Livraison à domicile">Livraison à domicile (min. 50€)</option>
+            <option value="Meet-Up">Meet-Up</option>
+          </select>
+        </div>
+        <div class="modal-field">
+          <label>Pseudo Telegram ( Mettre le @ avant le pseudo ex: @test)</label>
+          <input class="modal-input" type="text" id="orderUser" required maxlength="24" autocomplete="off" placeholder="@">
+        </div>
+        <div class="modal-field">
+          <label>Numéro de téléphone</label>
+          <input class="modal-input" type="tel" id="orderPhone" required maxlength="18" autocomplete="off" placeholder="ex: 0612345678">
+        </div>
+        <div class="modal-field">
+          <label>Adresse complète</label>
+          <textarea class="modal-input" id="orderAddress" required maxlength="128" rows="2" placeholder="Adresse pour la livraison"></textarea>
+        </div>
+        <button class="modal-btn" type="submit">Confirmer la commande</button>
+        <div id="finalError" class="modal-error"></div>
+      </form>
+    `;
+    showModal(html);
+  }
+
+  // === ENVOI COMMANDE ===
+  async function sendOrder(e) {
+    e.preventDefault();
+    let tgUser = document.getElementById('orderUser').value.trim();
+    let delivery = document.getElementById('delivery').value;
+    let phone = document.getElementById('orderPhone').value.trim();
+    let address = document.getElementById('orderAddress').value.trim();
+
+    if (!tgUser.startsWith('@') || tgUser.length < 4) {
+      document.getElementById('finalError').innerText = "Entrez un pseudo Telegram valide.";
+      return;
+    }
+
+    let total = cart.reduce((s,i)=>s+(Number(i.price)||0)*i.count,0);
+    let details = cart.map(item => `${item.name} (${item.qte}) x${item.count}: ${(Number(item.price)||0)*item.count}€`).join('\n');
+    let message =
+`Nouvelle commande Side Industry 2.1 :
+${details}
+Total : ${total}€
+Livraison ou meet up : ${delivery}
+Pseudo Telegram : ${tgUser}
+Numéro : ${phone}
+Adresse : ${address}`;
+
+    try {
+      const r = await fetch('/.netlify/functions/send-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: message })
+      });
+
+      if (!r.ok) throw new Error('send-order failed');
+
+      showModal(`
+        <div class="modal-title">Commande envoyée !</div>
+        <div class="modal-confirm">
+          Merci pour votre commande, elle est en cours de traitement.<br>
+          <span style="font-size:1.6em;">✔️</span><br>
+          <button class="modal-btn" onclick="closeModal();cart=[];updateCartBtn();renderProducts();">OK</button>
+        </div>
+      `);
+      cart = [];
+      updateCartBtn();
+    } catch (err) {
+      document.getElementById('finalError').innerText = "Erreur d'envoi. Essaie plus tard.";
+    }
+  }
+
+  // === INFO ===
+  function openInfo() {
+    showModal(`
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <div class="modal-title">Info & Consignes</div>
+      <div style="text-align:left; margin-top:12px; font-size:1.04rem;">
+        ${siteConfig.info || ''}
+      </div>
+    `);
+  }
+
+  // === MODALE GENERIQUE ===
+  function showModal(html) {
+    document.getElementById('modalContent').innerHTML = html;
+    document.getElementById('modalBg').style.display = 'flex';
+  }
+  function closeModal() {
+    document.getElementById('modalBg').style.display = 'none';
+  }
+  document.getElementById('modalBg').addEventListener('click', function(e){
+    if(e.target === this) closeModal();
+  });
+
+  // === BOTTOM-SHEET "DÉTAILS" ===
+  (function initBottomSheet(){
+    const $ = (id) => document.getElementById(id);
+    const sheet = $('productSheet');
+    const overlay = $('psOverlay');
+    const elTitle = $('psTitle');
+    const elMedia = $('psMedia');
+    const elBadges = $('psBadges');
+    const elDesc = $('psDesc');
+    const elPrices = $('psPrices');
+    const btnClose = $('psCloseBtn');
+    const btnCancel = $('psCancelBtn');
+    const btnAdd = $('psAddBtn');
+    const grab = sheet.querySelector('[data-sheet-grab]');
+
+    let currentProduct = null;
+    let startY = null;
+
+    function lockBody(lock){ document.body.toggleAttribute('data-sheet-lock', !!lock); }
+
+    function getImgUrl(p){ return normalizeUrl(p.img || p.image || p.image_url || p.photo || p.picture); }
+    function getVideoUrl(p){ return normalizeUrl(p.video || p.video_url || p.media || p.mp4); }
+
+    function priceChips(prices){
+      if (!Array.isArray(prices) || prices.length===0) return '';
+      return prices.map(x => `
+        <div class="price-chip">
+          <small>${escapeHTML(x.qte||'')}</small>
+          <span>${Number(x.price).toLocaleString(undefined,{maximumFractionDigits:2})}€</span>
+        </div>
+      `).join('');
+    }
+    function badges(p){
+      const out = [];
+      if (p.cat) out.push(`<span class="badge">🏷️ ${escapeHTML(p.cat)}</span>`);
+      if (p.thclvl!=null && p.thclvl!=='') out.push(`<span class="badge">🧪 THC ${escapeHTML(String(p.thclvl))}%</span>`);
+      if (p.effet) out.push(`<span class="badge">✨ ${escapeHTML(p.effet)}</span>`);
+      return out.join('');
+    }
+    function media(p){
+      const v = getVideoUrl(p);
+      const i = getImgUrl(p);
+      if (v) return `<video src="${v}" controls playsinline preload="metadata" style="background:#000"></video>`;
+      if (i) return `<img src="${i}" alt="${escapeHTML(p.name||'')}" loading="lazy" referrerpolicy="no-referrer">`;
+      return `<div style="display:grid;place-items:center;height:100%;color:#6b7280;">Aucun média</div>`;
+    }
+
+    function openProductSheet(prodStr){
+      const p = JSON.parse(decodeURIComponent(prodStr));
+      currentProduct = p;
+
+      elTitle.textContent = p.name || 'Produit';
+      elMedia.innerHTML = media(p);
+      elBadges.innerHTML = badges(p);
+      elDesc.textContent = p.desc || p.description || '';
+      elPrices.innerHTML = priceChips(p.prices);
+
+      sheet.classList.add('open');
+      sheet.setAttribute('aria-hidden','false');
+      overlay.style.display = 'block';
+      requestAnimationFrame(() => overlay.classList.add('show'));
+      lockBody(true);
+    }
+
+    function closeProductSheet(){
+      sheet.classList.remove('open');
+      sheet.setAttribute('aria-hidden','true');
+      overlay.classList.remove('show');
+      setTimeout(()=>{ overlay.style.display = 'none'; }, 200);
+      lockBody(false);
+      currentProduct = null;
+    }
+
+    // Events fermeture
+    btnClose.addEventListener('click', closeProductSheet);
+    btnCancel.addEventListener('click', closeProductSheet);
+    overlay.addEventListener('click', closeProductSheet);
+    window.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') closeProductSheet(); });
+
+    // Swipe vers le bas
+    grab.addEventListener('pointerdown', (e)=>{ startY = e.clientY; grab.setPointerCapture(e.pointerId); });
+    grab.addEventListener('pointermove', (e)=>{
+      if (startY==null) return;
+      const dy = Math.max(0, e.clientY - startY);
+      sheet.style.transform = `translateY(${dy}px)`;
+    });
+    grab.addEventListener('pointerup', ()=>{
+      if (startY==null) return;
+      const dy = parseFloat(sheet.style.transform.replace(/[^\d.]/g,'')) || 0;
+      sheet.style.transform = '';
+      startY = null;
+      if (dy > 80) closeProductSheet();
+    });
+
+    // Bouton “Ajouter au panier”
+    btnAdd.addEventListener('click', () => {
+      if (!currentProduct) return;
+      chooseQuantity(encodeURIComponent(JSON.stringify(currentProduct)));
+      closeProductSheet();
+    });
+
+    // Expose global
+    window.openProductSheet = openProductSheet;
+  })();
+
+  // === LANCE TOUT ===
+  document.addEventListener('DOMContentLoaded', loadAllConfig);
+  </script>
+</body>
+</html>
