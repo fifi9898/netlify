@@ -3,24 +3,25 @@ const { getKV, setKV } = require('./supabase');
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
-// Admins : ADMIN_IDS (1+ IDs séparés par virgule) ou fallback ADMIN_CHAT_ID
+// Admins : ADMIN_IDS (plusieurs IDs séparés par virgule) ou fallback ADMIN_CHAT_ID
 const ADMIN_IDS = (process.env.ADMIN_IDS || process.env.ADMIN_CHAT_ID || '')
-  .split(',').map(x => x.trim()).filter(Boolean);
+  .split(',')
+  .map(x => x.trim())
+  .filter(Boolean);
 const isAdmin = id => ADMIN_IDS.includes(String(id));
 
-// --- Utils Telegram ---
+// ---------- Utils Telegram ----------
 async function tgFetch(method, body, TOKEN) {
   const r = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
   });
-  const text = await r.text().catch(()=> '');
+  const text = await r.text().catch(() => '');
   let json = null;
   try { json = JSON.parse(text); } catch {}
   return { ok: r.ok, status: r.status, text, json };
 }
-
 async function sendMsg(TOKEN, chatId, text, extra = {}) {
   return tgFetch('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown', ...extra }, TOKEN);
 }
@@ -28,13 +29,13 @@ async function answerCb(TOKEN, cbId, text = '') {
   return tgFetch('answerCallbackQuery', { callback_query_id: cbId, text, show_alert: false }, TOKEN);
 }
 
-// --- Menu principal (reply keyboard) ---
+// ---------- UI clavier principal ----------
 function mainKeyboard() {
   return {
     reply_markup: {
       keyboard: [
-        ["➕ Ajouter", "📝 Modifier", "🗑️ Supprimer"],
-        ["🔑 Code d'accès", "🏠 Message bienvenue", "ℹ️ Info & consignes"]
+        ['➕ Ajouter', '📝 Modifier', '🗑️ Supprimer'],
+        ['🔑 Code d\'accès', '🏠 Message bienvenue', 'ℹ️ Info & consignes']
       ],
       resize_keyboard: true,
       one_time_keyboard: false
@@ -42,45 +43,47 @@ function mainKeyboard() {
   };
 }
 async function showMainMenu(TOKEN, chatId) {
-  await sendMsg(TOKEN, chatId, "Que veux-tu faire ?", mainKeyboard());
+  await sendMsg(TOKEN, chatId, 'Que veux-tu faire ?', mainKeyboard());
 }
 
-// --- Wizard produit (ajout/édition) ---
-// ⚠️ Effet + Arôme ajoutés ici
+// ---------- Wizard produit (effet + arôme inclus) ----------
 const productSteps = [
-  { key: 'name',   ask: (v)=>`Envoie le *NOM* du produit${v?` (ou /skip pour garder "${v}")`:""}` },
-  { key: 'cat',    ask: (v)=>`Catégorie ?${v?` (ou /skip pour garder "${v}")`:""}` },
-  { key: 'desc',   ask: (v)=>`Description ?${v?` (ou /skip pour garder "${v}")`:""}` },
-  { key: 'effet',  ask: (v)=>`Effet ?${v?` (ou /skip pour garder "${v}")`:""}` },   // NEW
-  { key: 'arome',  ask: (v)=>`Arôme ?${v?` (ou /skip pour garder "${v}")`:""}` },   // NEW
-  { key: 'thclvl', ask: (v)=>`Taux THC (%) ?${v?` (ou /skip pour garder "${v}")`:""}` },
-  { key: 'prices', ask: (v)=>`Prix (format : 1g:10,2g:18)\n${Array.isArray(v)&&v.length?`Valeur actuelle : ${v.map(x=>x.qte+":"+x.price).join(', ')}`:""}\nEnvoie ou /skip pour garder.` },
-  { key: 'img',    ask: (v)=>`URL image ? (ou /skip pour garder "${v||'(aucune)'}")` },
-  { key: 'video',  ask: (v)=>`URL vidéo ? (ou /skip pour garder "${v||'(aucune)'}")` },
+  { key: 'name',   ask: v => `Envoie le *NOM* du produit${v ? ` (ou /skip pour garder "${v}")` : ''}` },
+  { key: 'cat',    ask: v => `Catégorie ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
+  { key: 'desc',   ask: v => `Description ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
+  { key: 'effet',  ask: v => `Effet ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
+  { key: 'arome',  ask: v => `Arôme ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
+  { key: 'thclvl', ask: v => `Taux THC (%) ?${v ? ` (ou /skip pour garder "${v}")` : ''}` },
+  { key: 'prices', ask: v => `Prix (format : 1g:10,2g:18)\n${Array.isArray(v) && v.length ? `Valeur actuelle : ${v.map(x => x.qte + ':' + x.price).join(', ')}` : ''}\nEnvoie ou /skip pour garder.` },
+  { key: 'img',    ask: v => `URL image ? (ou /skip pour garder "${v || '(aucune)'}")` },
+  { key: 'video',  ask: v => `URL vidéo ? (ou /skip pour garder "${v || '(aucune)'}")` },
 ];
 
-// --- Inline pour lister les produits ---
+// ---------- Inline (éditer / supprimer) ----------
 function inlineEditRow(idx) {
-  return { inline_keyboard: [[ { text: "✏️ Modifier", callback_data: `edit_${idx}` } ]] };
+  return { reply_markup: { inline_keyboard: [[{ text: '✏️ Modifier', callback_data: `edit_${idx}` }]] } };
 }
 function inlineDeleteRow(idx) {
-  return { inline_keyboard: [[ { text: "🗑️ Supprimer", callback_data: `delete_${idx}` } ]] };
+  return { reply_markup: { inline_keyboard: [[{ text: '🗑️ Supprimer', callback_data: `delete_${idx}` }]] } };
 }
 function inlineConfirmDelete(idx) {
   return {
-    inline_keyboard: [[
-      { text: "❌ Annuler",  callback_data: "cancel_del" },
-      { text: "✅ Confirmer", callback_data: `confirmdel_${idx}` }
-    ]]
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '❌ Annuler',   callback_data: 'cancel_del' },
+        { text: '✅ Confirmer', callback_data: `confirmdel_${idx}` }
+      ]]
+    }
   };
 }
 
+// ========== HANDLER ==========
 exports.handler = async (event) => {
   try {
     const m = event.httpMethod;
-    if (m === 'HEAD')   return { statusCode: 200, headers: JSON_HEADERS };
-    if (m === 'OPTIONS')return { statusCode: 204, headers: JSON_HEADERS, body: '' };
-    if (m !== 'POST')   return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
+    if (m === 'HEAD')    return { statusCode: 200, headers: JSON_HEADERS };
+    if (m === 'OPTIONS') return { statusCode: 204, headers: JSON_HEADERS, body: '' };
+    if (m !== 'POST')    return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
 
     const TOKEN = process.env.BOT_TOKEN;
     if (!TOKEN) return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Missing BOT_TOKEN' }) };
@@ -89,7 +92,7 @@ exports.handler = async (event) => {
     try { update = JSON.parse(event.body || '{}'); }
     catch { return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Bad JSON' }) }; }
 
-    // --- CALLBACK QUERY (inline boutons) ---
+    // ----- CALLBACK QUERY (inline) -----
     if (update.callback_query) {
       const cb = update.callback_query;
       const chatId = cb.message?.chat?.id;
@@ -105,9 +108,10 @@ exports.handler = async (event) => {
 
       if (data.startsWith('delete_')) {
         const idx = parseInt(data.split('_')[1], 10);
-        if (!menu[idx]) { await sendMsg(TOKEN, chatId, 'Produit introuvable.'); }
-        else {
-          await sendMsg(TOKEN, chatId, `⚠️ Supprimer "*${menu[idx].name}*"?`, { reply_markup: inlineConfirmDelete(idx) });
+        if (!menu[idx]) {
+          await sendMsg(TOKEN, chatId, 'Produit introuvable.');
+        } else {
+          await sendMsg(TOKEN, chatId, `⚠️ Supprimer "*${menu[idx].name}*" ?`, inlineConfirmDelete(idx));
         }
         return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
       }
@@ -119,8 +123,9 @@ exports.handler = async (event) => {
 
       if (data.startsWith('confirmdel_')) {
         const idx = parseInt(data.split('_')[1], 10);
-        if (!menu[idx]) { await sendMsg(TOKEN, chatId, 'Produit introuvable.'); }
-        else {
+        if (!menu[idx]) {
+          await sendMsg(TOKEN, chatId, 'Produit introuvable.');
+        } else {
           const name = menu[idx].name || '(sans nom)';
           menu.splice(idx, 1);
           await setKV('menu', menu);
@@ -131,8 +136,9 @@ exports.handler = async (event) => {
 
       if (data.startsWith('edit_')) {
         const idx = parseInt(data.split('_')[1], 10);
-        if (!menu[idx]) { await sendMsg(TOKEN, chatId, 'Produit introuvable.'); }
-        else {
+        if (!menu[idx]) {
+          await sendMsg(TOKEN, chatId, 'Produit introuvable.');
+        } else {
           const stateKey = `state:${chatId}`;
           await setKV(stateKey, { mode: 'add', submode: 'edit', idx, step: 0, prod: { ...menu[idx] } });
           const first = productSteps[0];
@@ -144,7 +150,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // --- MESSAGE (reply keyboard / commandes) ---
+    // ----- MESSAGE -----
     const msg = update.message;
     const chatId = msg?.chat?.id;
     const txt = (msg?.text || '').trim();
@@ -157,48 +163,54 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // admin uniquement
+    // admin only
     if (!isAdmin(chatId)) {
       await sendMsg(TOKEN, chatId, '⛔ Accès admin requis.');
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // charge données
+    // données
     const stateKey = `state:${chatId}`;
     let state = (await getKV(stateKey)) || { mode: null, step: 0, prod: null };
     let menu = (await getKV('menu')) || [];
     let conf = (await getKV('site_config')) || { access_code: '1234', welcome: '', info: '' };
 
+    // accueil
     if (txt === '/start' || txt === '/help') {
       await showMainMenu(TOKEN, chatId);
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // === BOUTONS MENU PRINCIPAL ===
+    // ===== Boutons du menu principal =====
     if (txt === '➕ Ajouter') {
       state = { mode: 'add', submode: 'create', step: 0, prod: { prices: [] } };
       await setKV(stateKey, state);
-      const s = productSteps[0]; await sendMsg(TOKEN, chatId, s.ask(''), mainKeyboard());
+      const s = productSteps[0];
+      await sendMsg(TOKEN, chatId, s.ask(''), mainKeyboard());
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
     if (txt === '📝 Modifier') {
-      if (!menu.length) { await sendMsg(TOKEN, chatId, 'Aucun produit à modifier.', mainKeyboard()); }
-      else {
-        for (let i=0;i<menu.length;i++) {
+      if (!menu.length) {
+        await sendMsg(TOKEN, chatId, 'Aucun produit à modifier.', mainKeyboard());
+      } else {
+        for (let i = 0; i < menu.length; i++) {
           const p = menu[i];
-          await sendMsg(TOKEN, chatId, `#${i+1} - ${p.name || '(sans nom)'} ${p.cat?`(${p.cat})`:''}`, { reply_markup: inlineEditRow(i) });
+          const line = `#${i + 1} - ${p.name || '(sans nom)'} ${p.cat ? `(${p.cat})` : ''}`;
+          await sendMsg(TOKEN, chatId, line, inlineEditRow(i));
         }
       }
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
     if (txt === '🗑️ Supprimer') {
-      if (!menu.length) { await sendMsg(TOKEN, chatId, 'Aucun produit à supprimer.', mainKeyboard()); }
-      else {
-        for (let i=0;i<menu.length;i++) {
+      if (!menu.length) {
+        await sendMsg(TOKEN, chatId, 'Aucun produit à supprimer.', mainKeyboard());
+      } else {
+        for (let i = 0; i < menu.length; i++) {
           const p = menu[i];
-          await sendMsg(TOKEN, chatId, `#${i+1} - ${p.name || '(sans nom)'} ${p.cat?`(${p.cat})`:''}`, { reply_markup: inlineDeleteRow(i) });
+          const line = `#${i + 1} - ${p.name || '(sans nom)'} ${p.cat ? `(${p.cat})` : ''}`;
+          await sendMsg(TOKEN, chatId, line, inlineDeleteRow(i));
         }
       }
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
@@ -225,7 +237,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // === ANNULER ===
+    // cancel
     if (txt === '/cancel' || txt === '/annuler') {
       state = { mode: null, step: 0, prod: null };
       await setKV(stateKey, state);
@@ -233,7 +245,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // === MODE CONFIG_SET (depuis boutons) ===
+    // ===== Mode config_set =====
     if (state.mode === 'config_set' && state.key) {
       const key = state.key;
       if (key === 'access_code') {
@@ -249,13 +261,14 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // === WIZARD PRODUIT (add/edit) ===
+    // ===== Wizard d'ajout / édition =====
     if (state.mode === 'add') {
       const step = state.step || 0;
       const prod = state.prod || {};
       const current = productSteps[step];
 
       if (!current) {
+        // fin
         if (state.submode === 'create') menu.push(prod);
         if (state.submode === 'edit')   menu[state.idx] = prod;
         await setKV('menu', menu);
@@ -269,14 +282,14 @@ exports.handler = async (event) => {
           prod.prices = txt
             ? txt.split(',').map(s => {
                 const [qte, price] = s.split(':');
-                return { qte: (qte||'').trim(), price: Number((price||'').trim()) };
+                return { qte: (qte || '').trim(), price: Number((price || '').trim()) };
               }).filter(x => x.qte && !isNaN(x.price))
             : [];
         } else if (current.key === 'thclvl') {
           const num = Number(txt);
           if (!isNaN(num)) prod.thclvl = num;
         } else {
-          // desc, effet, arome, name, cat
+          // name, cat, desc, effet, arome, img, video
           prod[current.key] = txt;
         }
       }
@@ -313,7 +326,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // --- /menu (liste simple) ---
+    // ----- /menu (liste simple) -----
     if (txt === '/menu') {
       const list = menu.length
         ? menu.map((p, i) => `${i + 1}. *${p.name || '(sans nom)'}* ${p.cat ? `— ${p.cat}` : ''}`).join('\n')
@@ -322,7 +335,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // --- /edit: autoriser effet + arome ---
+    // ----- /edit N champ valeur...  (inclut effet + arome) -----
     if (txt.startsWith('/edit ')) {
       const parts = txt.split(' ');
       if (parts.length < 4) {
@@ -337,7 +350,7 @@ exports.handler = async (event) => {
         return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
       }
       const item = menu[n - 1];
-      const allowed = ['name','cat','desc','effet','arome','thclvl','prices','img','video']; // NEW fields
+      const allowed = ['name','cat','desc','effet','arome','thclvl','prices','img','video'];
       if (!allowed.includes(field)) {
         await sendMsg(TOKEN, chatId, `Champ invalide. Utilise: ${allowed.join(', ')}`);
         return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
@@ -350,13 +363,12 @@ exports.handler = async (event) => {
         }
         item.thclvl = num;
       } else if (field === 'prices') {
-        const arr = value
+        item.prices = value
           ? value.split(',').map(x => {
               const [qte, price] = x.split(':');
-              return { qte: qte?.trim(), price: Number(price) };
+              return { qte: (qte || '').trim(), price: Number(price) };
             }).filter(x => x.qte && !isNaN(x.price))
           : [];
-        item.prices = arr;
       } else {
         item[field] = value; // name, cat, desc, effet, arome, img, video
       }
@@ -366,7 +378,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // Par défaut → réaffiche le menu
+    // défaut : réaffiche le menu
     await showMainMenu(TOKEN, chatId);
     return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
 
@@ -374,5 +386,6 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Internal error', details: String(err?.message || err) }) };
   }
 };
+
 
 
