@@ -7,8 +7,7 @@ exports.handler = async (event) => {
   try {
     const m = event.httpMethod;
 
-    // Évite les 405 parasites
-    if (m === 'HEAD') return { statusCode: 200, headers: JSON_HEADERS };
+    if (m === 'HEAD')    return { statusCode: 200, headers: JSON_HEADERS };
     if (m === 'OPTIONS') return { statusCode: 204, headers: JSON_HEADERS, body: '' };
 
     if (m === 'GET') {
