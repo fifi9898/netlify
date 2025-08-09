@@ -326,6 +326,10 @@ html, body {
   box-shadow: 0 7px 36px #000c;
   position: relative; text-align: center;
 }
+.modal-content {
+  max-height: 90vh;
+  overflow-y: auto;
+}
 .modal-close {
   position: absolute; top: 12px; right: 16px; font-size: 1.5rem; color: var(--muted); cursor: pointer; background: none; border: none; z-index: 3;
 }
@@ -416,17 +420,10 @@ html, body {
 
 /* ----- Mobile Responsive (< 700px & < 500px) ----- */
 @media (max-width: 700px) {
-  .product-details-card {
-    padding: 14px 2vw 8px 2vw;
-    max-width: 99vw;
-  }
+  .product-details-card { padding: 14px 2vw 8px; max-width: 99vw; }
   .details-header { font-size: 1.1rem; }
   .modal-title { font-size: 1.3rem; }
-  .details-flex {
-    flex-direction: column;
-    gap: 9px;
-    align-items: stretch;
-  }
+  
   .details-media {
     max-width: 97vw;
     margin: 0 auto 7px auto;
@@ -568,11 +565,12 @@ function renderProducts(filterCat = 'all') {
                     <div class="product-type">${prod.cat}</div>
                     ${
   prod.img
-    ? `<img class="card-img" src="${prod.img}" alt="photo ${prod.name}">`
+    ? `<img class="card-img" src="${prod.img}" alt="photo ${prod.name}" loading="lazy" onerror="this.style.display='none'">`
     : prod.video
-      ? `<video class="card-img" src="${prod.video}" muted autoplay loop playsinline style="object-fit:cover;"></video>`
+      ? `<video class="card-img" src="${prod.video}" muted autoplay loop playsinline preload="metadata" style="object-fit:cover;" onerror="this.replaceWith(document.createElement('div'))"></video>`
       : ""
 }
+
                     <div style="padding:0 17px;">
                         <div class="product-name">${prod.name}</div>
                         <div class="product-price">${prod.desc || ""}</div>
@@ -703,11 +701,12 @@ function showDetails(prodStr) {
     <div class="details-flex">
       <div class="details-media">
         ${prod.video 
-          ? `<video src="${prod.video}" controls style="width:100%;max-width:340px;border-radius:18px;box-shadow:0 2px 18px #0003;margin-bottom:12px;background:#222"></video>`
-          : prod.img 
-            ? `<img src="${prod.img}" style="width:100%;max-width:340px;border-radius:18px;box-shadow:0 2px 18px #0003;margin-bottom:12px;">`
-            : ""
-        }
+  ? `<video src="${prod.video}" controls preload="metadata" style="width:100%;max-width:340px;border-radius:18px;box-shadow:0 2px 18px #0003;margin-bottom:12px;background:#222;max-height:70vh;"></video>`
+  : prod.img 
+    ? `<img src="${prod.img}" style="width:100%;max-width:340px;border-radius:18px;box-shadow:0 2px 18px #0003;margin-bottom:12px;max-height:70vh;object-fit:cover;">`
+    : ""
+}
+
       </div>
       <div class="details-info">
         ${prod.desc ? `<div class="details-desc">${prod.desc}</div>` : ""}
@@ -838,4 +837,5 @@ document.getElementById('modalBg').addEventListener('click', function(e){
 document.addEventListener('DOMContentLoaded', loadAllConfig);
 </script>
 </body>
+
 </html>
