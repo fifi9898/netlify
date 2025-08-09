@@ -1,9 +1,11 @@
-// functions/telegram.js
+// netlify/functions/telegram.js
+'use strict';
+
 const { getKV, setKV } = require('./supabase');
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
-// Admins : ADMIN_IDS (plusieurs IDs séparés par virgule) ou fallback ADMIN_CHAT_ID
+// --- Admins: ADMIN_IDS (liste) ou fallback ADMIN_CHAT_ID ---
 const ADMIN_IDS = (process.env.ADMIN_IDS || process.env.ADMIN_CHAT_ID || '')
   .split(',')
   .map(x => x.trim())
@@ -29,21 +31,20 @@ async function answerCb(TOKEN, cbId, text = '') {
   return tgFetch('answerCallbackQuery', { callback_query_id: cbId, text, show_alert: false }, TOKEN);
 }
 
-// ---------- UI clavier principal ----------
+// ---------- Clavier principal ----------
 function mainKeyboard() {
   return {
     reply_markup: {
       keyboard: [
-        ["➕ Ajouter", "📝 Modifier", "🗑️ Supprimer"],
-        ["🔑 Code d'accès", "🏠 Message bienvenue", "ℹ️ Info & consignes"],
-        ["🎁 Fidélité", "📢 Bandeau promo"] // <<< NOUVEAUX BOUTONS
+        ['➕ Ajouter', '📝 Modifier', '🗑️ Supprimer'],
+        ['🔑 Code d\'accès', '🏠 Message bienvenue', 'ℹ️ Info & consignes'],
+        ['🎁 Fidélité', '📢 Bandeau promo'] // nouveaux boutons
       ],
       resize_keyboard: true,
       one_time_keyboard: false
     }
   };
 }
-
 async function showMainMenu(TOKEN, chatId) {
   await sendMsg(TOKEN, chatId, 'Que veux-tu faire ?', mainKeyboard());
 }
@@ -77,6 +78,24 @@ function inlineConfirmDelete(idx) {
       ]]
     }
   };
+}
+
+// ---------- Helpers config (merge profond) ----------
+async function updateSiteConfig(patch) {
+  const conf = (await getKV('site_config')) || {};
+  const next = {
+    access_code: conf.access_code || '1234',
+    welcome: conf.welcome || '',
+    info: conf.info || '',
+    loyalty: { threshold: 5, reward: '🎁 Cadeau', ...(conf.loyalty || {}), ...(patch.loyalty || {}) },
+    promo:   { enabled: false, text: '',        ...(conf.promo   || {}), ...(patch.promo   || {}) },
+  };
+  // écrase top-level si présent dans patch
+  for (const k of ['access_code','welcome','info']) {
+    if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = patch[k];
+  }
+  await setKV('site_config', next);
+  return next;
 }
 
 // ========== HANDLER ==========
@@ -175,7 +194,13 @@ exports.handler = async (event) => {
     const stateKey = `state:${chatId}`;
     let state = (await getKV(stateKey)) || { mode: null, step: 0, prod: null };
     let menu = (await getKV('menu')) || [];
-    let conf = (await getKV('site_config')) || { access_code: '1234', welcome: '', info: '' };
+    let conf = (await getKV('site_config')) || {
+      access_code: '1234',
+      welcome: '',
+      info: '',
+      loyalty: { threshold: 5, reward: '🎁 Cadeau' },
+      promo:   { enabled: false, text: '' }
+    };
 
     // accueil
     if (txt === '/start' || txt === '/help') {
@@ -239,7 +264,98 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // cancel
+    // ===== 🎁 Fidélité =====
+    if (txt === '🎁 Fidélité') {
+      state = { mode: 'loyalty', step: 0, prod: null };
+      await setKV(stateKey, state);
+      await sendMsg(
+        TOKEN,
+        chatId,
+        `Fidélité actuelle:\n- Seuil: *${conf?.loyalty?.threshold ?? 5}*\n- Récompense: *${conf?.loyalty?.reward ?? '🎁 Cadeau'}*\n\n` +
+        `Envoie le *nouveau seuil (nombre)*, ou /skip pour garder.`,
+        mainKeyboard()
+      );
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    if (state.mode === 'loyalty') {
+      if (txt === '/annuler') {
+        await setKV(stateKey, { mode: null, step: 0, prod: null });
+        await sendMsg(TOKEN, chatId, 'Action annulée.', mainKeyboard());
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+      if (state.step === 0) {
+        let newThreshold = conf?.loyalty?.threshold ?? 5;
+        if (txt !== '/skip') {
+          const n = Number(txt);
+          if (!Number.isInteger(n) || n < 1 || n > 999) {
+            await sendMsg(TOKEN, chatId, 'Envoie un nombre entre 1 et 999, ou /skip pour garder.');
+            return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+          }
+          newThreshold = n;
+        }
+        state = { mode: 'loyalty', step: 1, prod: { threshold: newThreshold } };
+        await setKV(stateKey, state);
+        await sendMsg(
+          TOKEN,
+          chatId,
+          `OK. Texte de récompense ? (ex: "🎁 1g offert")\nEnvoie le texte, ou /skip pour garder "${conf?.loyalty?.reward ?? '🎁 Cadeau'}".`
+        );
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+      if (state.step === 1) {
+        const reward = (txt === '/skip') ? (conf?.loyalty?.reward ?? '🎁 Cadeau') : txt;
+        const next = await updateSiteConfig({ loyalty: { threshold: state.prod.threshold, reward } });
+        await setKV(stateKey, { mode: null, step: 0, prod: null });
+        await sendMsg(
+          TOKEN,
+          chatId,
+          `✅ Fidélité mise à jour !\n- Seuil: *${next.loyalty.threshold}*\n- Récompense: *${next.loyalty.reward}*`,
+          mainKeyboard()
+        );
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+    }
+
+    // ===== 📢 Bandeau promo =====
+    if (txt === '📢 Bandeau promo') {
+      state = { mode: 'promo', step: 0, prod: null };
+      await setKV(stateKey, state);
+      const current = conf?.promo?.enabled && conf?.promo?.text ? `\n\n*Actuel:* ${conf.promo.text}` : '';
+      await sendMsg(
+        TOKEN,
+        chatId,
+        `Envoie le *texte du bandeau promo* (max 200 caractères).\n` +
+        `Envoie */off* pour désactiver.${current}`,
+        mainKeyboard()
+      );
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    if (state.mode === 'promo') {
+      if (txt === '/annuler') {
+        await setKV(stateKey, { mode: null, step: 0, prod: null });
+        await sendMsg(TOKEN, chatId, 'Action annulée.', mainKeyboard());
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+      if (txt === '/off') {
+        await updateSiteConfig({ promo: { enabled: false, text: '' } });
+        await setKV(stateKey, { mode: null, step: 0, prod: null });
+        await sendMsg(TOKEN, chatId, '📵 Bandeau promo *désactivé*.', mainKeyboard());
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+      const value = (txt || '').trim();
+      if (!value || value.length > 200) {
+        await sendMsg(TOKEN, chatId, 'Texte invalide. Max 200 caractères. Réessaie ou /annuler.');
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+      }
+      const next = await updateSiteConfig({ promo: { enabled: true, text: value } });
+      await setKV(stateKey, { mode: null, step: 0, prod: null });
+      await sendMsg(TOKEN, chatId, `✅ Bandeau promo *activé*.\nTexte: ${next.promo.text}`, mainKeyboard());
+      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
+    }
+
+    // cancel global
     if (txt === '/cancel' || txt === '/annuler') {
       state = { mode: null, step: 0, prod: null };
       await setKV(stateKey, state);
@@ -247,7 +363,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // ===== Mode config_set =====
+    // ===== Mode config_set (access_code / welcome / info) =====
     if (state.mode === 'config_set' && state.key) {
       const key = state.key;
       if (key === 'access_code') {
@@ -256,14 +372,15 @@ exports.handler = async (event) => {
           return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
         }
       }
-      conf[key] = txt;
-      await setKV('site_config', conf);
+      const next = await updateSiteConfig({ [key]: txt });
       await setKV(stateKey, { mode: null, step: 0, prod: null });
       await sendMsg(TOKEN, chatId, `✅ ${key} mis à jour !`, mainKeyboard());
+      // rafraîchit conf locale
+      conf = next;
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // ===== Wizard d'ajout / édition =====
+    // ===== Wizard d'ajout / édition produits =====
     if (state.mode === 'add') {
       const step = state.step || 0;
       const prod = state.prod || {};
@@ -310,6 +427,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
+    // /done pour finaliser si bloqué avant la fin du wizard
     if (txt === '/done') {
       if (state.mode !== 'add' || !state.prod) {
         await sendMsg(TOKEN, chatId, 'Rien à enregistrer. Tape "➕ Ajouter" pour commencer.', mainKeyboard());
@@ -328,7 +446,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // ----- /menu (liste simple) -----
+    // /menu simple
     if (txt === '/menu') {
       const list = menu.length
         ? menu.map((p, i) => `${i + 1}. *${p.name || '(sans nom)'}* ${p.cat ? `— ${p.cat}` : ''}`).join('\n')
@@ -337,7 +455,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
     }
 
-    // ----- /edit N champ valeur...  (inclut effet + arome) -----
+    // /edit N champ valeur...  (inclut effet + arome)
     if (txt.startsWith('/edit ')) {
       const parts = txt.split(' ');
       if (parts.length < 4) {
@@ -385,8 +503,11 @@ exports.handler = async (event) => {
     return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) };
 
   } catch (err) {
-    return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Internal error', details: String(err?.message || err) }) };
+    return {
+      statusCode: 500,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: 'Internal error', details: String(err?.message || err) })
+    };
   }
 };
-
 
