@@ -6,11 +6,8 @@ const JSON_HEADERS = {
   'access-control-allow-headers': 'content-type',
 };
 
-// Si tu as déjà ce helper (utilisé par telegram.js)
 let getKV = async () => null;
-try {
-  ({ getKV } = require('./supabase'));
-} catch {}
+try { ({ getKV } = require('./supabase')); } catch {}
 
 exports.handler = async (event) => {
   try {
@@ -18,7 +15,7 @@ exports.handler = async (event) => {
     if (m === 'OPTIONS') return { statusCode: 204, headers: JSON_HEADERS, body: '' };
     if (m !== 'GET') return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
 
-    // Valeurs par défaut (fallback ENV si tu préfères)
+    // Valeurs par défaut si rien en KV
     const defaults = {
       access_code: process.env.ACCESS_CODE || '1234',
       welcome: process.env.WELCOME || '',
@@ -27,19 +24,23 @@ exports.handler = async (event) => {
         threshold: Number(process.env.LOYALTY_THRESHOLD) || 5,
         reward: process.env.LOYALTY_REWARD || '🎁 Cadeau',
       },
+      promo: {
+        enabled: (process.env.PROMO_ENABLED || 'false') === 'true',
+        text: process.env.PROMO_TEXT || '',
+      }
     };
 
-    // Si tu utilises Supabase KV: on lit la clé 'site_config'
+    // Lit KV si dispo
     let kvConf = {};
     if (typeof getKV === 'function') {
       kvConf = (await getKV('site_config')) || {};
     }
 
-    // Merge propre (loyalty imbriqué)
     const finalConf = {
       ...defaults,
       ...kvConf,
       loyalty: { ...defaults.loyalty, ...(kvConf?.loyalty || {}) },
+      promo:   { ...defaults.promo,   ...(kvConf?.promo   || {}) },
     };
 
     return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify(finalConf) };
@@ -47,4 +48,3 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Internal error', details: String(err?.message || err) }) };
   }
 };
-
