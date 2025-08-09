@@ -34,14 +34,16 @@ function mainKeyboard() {
   return {
     reply_markup: {
       keyboard: [
-        ['➕ Ajouter', '📝 Modifier', '🗑️ Supprimer'],
-        ['🔑 Code d\'accès', '🏠 Message bienvenue', 'ℹ️ Info & consignes']
+        ["➕ Ajouter", "📝 Modifier", "🗑️ Supprimer"],
+        ["🔑 Code d'accès", "🏠 Message bienvenue", "ℹ️ Info & consignes"],
+        ["🎁 Fidélité", "📢 Bandeau promo"] // <<< NOUVEAUX BOUTONS
       ],
       resize_keyboard: true,
       one_time_keyboard: false
     }
   };
 }
+
 async function showMainMenu(TOKEN, chatId) {
   await sendMsg(TOKEN, chatId, 'Que veux-tu faire ?', mainKeyboard());
 }
@@ -386,4 +388,5 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Internal error', details: String(err?.message || err) }) };
   }
 };
+
 
