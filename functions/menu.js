@@ -12,5 +12,9 @@ exports.handler = async () => {
     .order('created_at', { ascending: false });
 
   if (error) return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
-  return { statusCode: 200, headers: { 'Content-Type':'application/json' }, body: JSON.stringify(data || []) };
+  return {
+    statusCode: 200,
+    headers: { 'Content-Type':'application/json' },
+    body: JSON.stringify(data || [])
+  };
 };
